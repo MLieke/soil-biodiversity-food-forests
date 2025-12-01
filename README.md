@@ -11,6 +11,7 @@ The folder "Data" contains the
 - the preprocessed *.rds files that contain estimates of Hill numbers per sample and Bray-Curtis dissimilarity matrices for the sequencing data
 - information on the taxonomy of the macrofaunal groups
 
+
 The main folder contains 
 - the scripts with the code to perform the analyses for each of the four main hypotheses (H1, H2, H3 and H4) as well as for the analysis of the physicochemical soil properties; this also involves the file 0c.bootstrap_approach.R, which contains the code used for performing the bootstrapping, here just for one example.
 - the files *.rds files produced and used over the course of the analyses (e.g. the bootstrap values in bblist_dens.rds)
