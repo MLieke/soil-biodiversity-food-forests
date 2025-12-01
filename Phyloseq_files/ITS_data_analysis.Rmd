@@ -1,0 +1,155 @@
+---
+title: "ITS_data_analysis"
+output: html_document
+date: "2024-04-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(phyloseq)
+library(MicEco)
+library(metagenomeSeq)
+library(metagMisc)
+library(vegan)
+library(iNEXT)
+library(ggforce)
+```
+
+```{r data}
+ps <- readRDS("ps_ITS.rds")
+```
+
+```{r check kingdoms}
+# ps %>% rank_names()
+# ps %>% get_taxa_unique("Class")
+# # rowSums(otu_table(ps))
+# sample_data(ps)
+# ps_amf <- ps %>% subset_taxa(Class == "c__Glomeromycetes" | Class == "c__Glomeromycota_cls_Incertae_sedis")
+ps_no_amf <- ps %>% subset_taxa(Class != "c__Glomeromycetes" | is.na(Class)) %>% 
+                    subset_taxa(Class != "c__Glomeromycota_cls_Incertae_sedis" | is.na(Class))
+# ps_no_amf %>% get_taxa_unique("Class")
+# rowSums(otu_table(ps_amf))
+# min(sample_sums(ps_no_amf))
+# max(sample_sums(ps_no_amf))
+# ps_no_amf
+check <- prune_taxa(taxa_sums(ps_no_amf) > 0, ps_no_amf) #No empty taxa
+saveRDS(ps_no_amf, "ps_nonamfungi.RDS")
+```
+
+```{r matrix}
+recoding <- read.csv2("dna_code_ITS_site.csv")
+ASV <- as(otu_table(ps_no_amf), "matrix")
+# transpose if necessary
+if(taxa_are_rows(ps_no_amf)){ASV <- t(ASV)}
+# Coerce to data.frame
+ASVdf <- as.data.frame(ASV)
+ASV_string <- paste0("ASV", seq(ntaxa(ps_no_amf)))
+colnames(ASVdf) <- ASV_string
+ASVdf$i5_code <- rownames(ASVdf)
+ASVdf <- ASVdf %>% left_join(recoding[,c("i5_code", "code")], by="i5_code")
+rownames(ASVdf) <- ASVdf$code
+ASVdf <- ASVdf %>% select(-c(i5_code, code))
+# write.csv(ASVdf, "ITS_P2.csv")
+ITS_dist <- avgdist(ASVdf, sample=min(sample_sums(ps_no_amf)), iterations=50)
+saveRDS(ITS_dist, "ITS_dist.rds")
+```
+
+```{r depth cutoff}
+#check read depth
+read_abund <- data.frame(abund = rowSums(otu_table(ps_no_amf)))
+read_abund$i5_code <- rownames(read_abund)
+read_abund <- read_abund %>% left_join(recoding[,c("i5_code", "code","landuse")], by="i5_code")
+read_abund %>% ggplot(aes(x=1, y=abund)) +
+  geom_jitter() + 
+  scale_y_log10()
+
+read_abund %>% arrange(abund) %>% 
+  ggplot(aes(x=1:nrow(.),y=abund)) + geom_line()
+
+read_abund %>% arrange(abund) %>% print(n=30)
+```
+
+```{r reads vs asv richness}
+sample_reads <- sample_sums(otu_table(ps_no_amf))
+
+# Extract sample-wise counts of ASVs
+sample_asvs <- sample_sums(otu_table(ps_no_amf) > 0)
+
+plot(sample_reads, sample_asvs,
+     xlab = "Number of Reads",
+     ylab = "Number of ASVs",
+     main = "Number of Reads vs Number of ASVs per Sample")
+
+# Add regression line
+abline(lm(sample_asvs ~ sample_reads))
+
+# Calculate R-squared and p-value
+fit<-lm(sample_asvs~sample_reads)
+rsquared <- summary(fit)$r.squared
+p_value <- summary(fit)$coefficients[2, 4]
+
+# Add R-squared and p-value to the plot
+text(x = max(sample_reads) * 0.7, y = max(sample_asvs) * 0.8,
+     labels = paste("R² =", round(rsquared, 2), "\np =", signif(p_value, digits = 3)),
+     adj = c(-1, 0))
+```
+
+``` {r iNEXT}
+min(sample_sums(ps_no_amf))
+site_info <- read_csv2("dna_code_ITS_site.csv")
+
+#estimateD on plot based data
+iNEXT_input_table <- otu_table(ps_no_amf) %>%
+  t() %>%
+  data.frame()
+set.seed(183494)
+Hill_plot_1 <- estimateD(iNEXT_input_table, q = 1, 
+                           datatype = "abundance",
+                          base = "size", min(sample_sums(ps_no_amf)))
+Hill_plot_1 <- Hill_plot_1 %>% separate(Assemblage, c("i5", "dna_code"))
+Hill_plot_1$dna_code <- as.numeric(Hill_plot_1$dna_code)
+Hill_plot_1 <- left_join(Hill_plot_1, site_info[,c("dna_code","unique_site","landuse", "location", "texture")], by= "dna_code")
+write.csv(Hill_plot_1, file="Hill_1_ITS.csv")
+# inext_out <- iNEXT(iNEXT_input_table_16S, q = 1, datatype = "abundance")
+
+# q=0 for supplement
+Hill_plot_0 <- estimateD(iNEXT_input_table, q=0,
+                         datatype="abundance",
+                         base="size", min(sample_sums(ps_no_amf)))
+Hill_plot_0 <- Hill_plot_0 %>% separate(Assemblage, c("i5", "dna_code"))
+Hill_plot_0$dna_code <- as.numeric(Hill_plot_0$dna_code)
+Hill_plot_0 <- left_join(Hill_plot_0, site_info[,c("dna_code","unique_site","landuse", "location", "texture")], by= "dna_code")
+write.csv(Hill_plot_0, file="Hill_0_ITS.csv")
+
+# q=1 for supplement
+Hill_plot_2 <- estimateD(iNEXT_input_table, q=2,
+                         datatype="abundance",
+                         base="size", min(sample_sums(ps_no_amf)))
+Hill_plot_2 <- Hill_plot_2 %>% separate(Assemblage, c("i5", "dna_code"))
+Hill_plot_2$dna_code <- as.numeric(Hill_plot_2$dna_code)
+Hill_plot_2 <- left_join(Hill_plot_2, site_info[,c("dna_code","unique_site","landuse", "location", "texture")], by= "dna_code")
+write.csv(Hill_plot_2, file="Hill_2_ITS.csv")
+```
+
+```{r rarefaction}
+vb_colors <- c( "#F0E442","#56B4E9","#D55E00", "#009E73")
+
+r <- ggrare(ps_no_amf, step = 100, color = "landuse", se=FALSE)
+r <- r + scale_color_manual(values=vb_colors) +
+  # xlim(c(0,50000)) + 
+  geom_vline(xintercept=31042) + xlab("Sample read depth")
+  xlab("Sample read depth")
+r  
+saveRDS(r, "rarefaction_nonamfungi.RDS")
+```
+```{r check samples}
+s <- tax_glom(ps_no_amf, taxrank="Phylum", NArm=FALSE) %>% plot_bar(x="code", fill="Phylum") +
+  theme_minimal() +
+  theme(legend.position="none")
+s
+ggplotly(s)
+```

@@ -1,0 +1,169 @@
+---
+title: "18S_P_data_analysis"
+output: html_document
+date: "2024-04-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(phyloseq)
+library(MicEco)
+library(metagenomeSeq)
+library(metagMisc)
+library(vegan)
+library(iNEXT)
+library(ggforce)
+# library(ggvenn)
+library(indicspecies)
+# library(pairwiseAdonis)
+library(plotly)
+```
+
+```{r data}
+ps <- readRDS("ps_18S.rds")
+# add texture and location info
+sample_data <- data.frame(sample_data(ps))
+sample_data$i5_code <- rownames(sample_data)
+site_info <- read.csv2("dna_code_18S_site.csv")
+sample_data <- sample_data %>% left_join(select(site_info, code, texture, location), by="code")
+rownames(sample_data) <- sample_data$i5_code
+sample_data(ps) <- sample_data
+```
+
+```{r check phyla}
+# ps %>% rank_names()
+colnames(tax_table(ps)) <- c("Domain", "Supergroup", "Division", "Subdivision", "Class", "Order", "Family", "Genus", "Species")
+# ps %>% get_taxa_unique("Subdivision")
+
+# ps_P <- ps %>% subset_taxa(...)
+# rowSums(otu_table(ps_P))
+
+# ps@tax_table %>%
+#   data.frame() %>% select(Domain:Species) %>% 
+#   summarise_all(funs(n_distinct(.)))
+
+ps_P <- subset_taxa(ps, !Domain == "Bacteria" & !Domain == "Archaea" &
+                        !Subdivision == "Fungi" & !Subdivision == "Metazoa" &
+                        !Class == "Embryophyceae" & !Class == "Embryophyceae:plas")
+# ps_P %>% get_taxa_unique("Order") %>% sort()
+# ps_P_2 <- prune_samples(sample_sums(ps_P) > 1000, ps_P)
+# rownames(otu_table(ps_P_2))[rowSums(otu_table(ps_P_2)) < 1000]
+ps_P_2 <- prune_samples(sample_sums(ps_P) > 800, ps_P) # 141 samples with 8275 taxa
+# ps_P_2
+ps_P_3 <- prune_taxa(taxa_sums(ps_P_2) > 0, ps_P_2) # 141 samples with 8174 taxa
+# ps_P_3
+saveRDS(ps_P_3, "ps_protists.RDS")
+```
+
+```{r}
+recoding <- read.csv2("dna_code_18S_site.csv")
+recoding$i5_code <- paste0("i5.",recoding$dna_code)
+ASV <- as(otu_table(ps_P_3), "matrix")
+# transpose if necessary
+if(taxa_are_rows(ps_P_3)){ASV <- t(ASV)}
+# Coerce to data.frame
+ASVdf = as.data.frame(ASV)
+ASV_string <- paste0("ASV", seq(ntaxa(ps_P_3)))
+colnames(ASVdf) <- ASV_string
+ASVdf$i5_code <- rownames(ASVdf)
+ASVdf <- ASVdf %>% left_join(recoding[,c("i5_code", "code")], by="i5_code")
+rownames(ASVdf) <- ASVdf$code
+ASVdf <- ASVdf %>% select(-c(i5_code, code))
+# write.csv(ASVdf, "18S_P2_800.csv")
+# P18S_dist <- avgdist(ASVdf, sample=min(sample_sums(ps_P_3)), iterations=50)
+# saveRDS(P18S_dist, "P18S_dist_800.rds")
+```
+
+```{r depth cutoff}
+#check read depth
+read_abund <- data.frame(abund = rowSums(otu_table(ps_P)))
+read_abund$i5_code <- rownames(read_abund)
+read_abund <- read_abund %>% separate(i5_code, c("i5","dna_code"))
+read_abund$dna_code <- as.numeric(read_abund$dna_code)
+read_abund <- read_abund %>% left_join(recoding[,c("dna_code", "code","landuse")], by="dna_code")
+read_abund %>% ggplot(aes(x=1, y=abund, label=code)) +
+  scale_y_log10() +
+  geom_jitter(position = position_jitter(seed = 1)) + ggrepel::geom_text_repel(position = position_jitter(seed = 1))
+
+read_abund %>% arrange(abund) %>% 
+  ggplot(aes(x=1:nrow(.),y=abund)) + geom_line()
+
+read_abund %>% arrange(abund) %>% print(n=30)
+```
+
+```{r reads vs asv richness}
+# Extract sample-wise read counts
+sample_reads <- sample_sums(otu_table(ps_P_3))
+hist(sample_reads, breaks=100) # , xlim=c(0,5000)
+
+# Extract sample-wise counts of ASVs
+sample_asvs <- sample_sums(otu_table(ps_P_3) > 0)
+
+plot(sample_reads, sample_asvs,
+     xlab = "Number of Reads",
+     ylab = "Number of ASVs",
+     main = "Number of Reads vs Number of ASVs per Sample")
+
+# Add regression line
+abline(lm(sample_asvs ~ sample_reads))
+
+# Calculate R-squared and p-value
+fit<-lm(sample_asvs~sample_reads)
+rsquared <- summary(fit)$r.squared
+p_value <- summary(fit)$coefficients[2, 4]
+
+# Add R-squared and p-value to the plot
+text(x = max(sample_reads) * 0.7, y = max(sample_asvs) * 0.8,
+     labels = paste("R² =", round(rsquared, 2), "\np =", signif(p_value, digits = 3)),
+     adj = c(-1, 0))
+```
+
+```{r iNEXT}
+min(rowSums(otu_table(ps_P_3)))
+
+site_info <- read_csv2("dna_code_18S_site.csv")
+iNEXT_input_table <- otu_table(ps_P_3) %>%
+  t() %>%
+  data.frame()
+set.seed(183494)
+Hill_plot_1 <- estimateD(iNEXT_input_table, q = 1, 
+                           datatype = "abundance",
+                          base = "size", min(sample_sums(ps_P_3)))
+Hill_plot_1 <- Hill_plot_1 %>% separate(Assemblage, c("i5", "dna_code"))
+Hill_plot_1$dna_code <- as.numeric(Hill_plot_1$dna_code)
+Hill_plot_1 <- left_join(Hill_plot_1, site_info[,c("dna_code","code","unique_site","landuse", "location", "texture")], by= "dna_code")
+write.csv(Hill_plot_1, file="Hill_1_18S.csv")
+
+# q=0 for supplement
+Hill_plot_0 <- estimateD(iNEXT_input_table, q=0,
+                         datatype="abundance",
+                         base="size", min(sample_sums(ps_P_3)))
+Hill_plot_0 <- Hill_plot_0 %>% separate(Assemblage, c("i5", "dna_code"))
+Hill_plot_0$dna_code <- as.numeric(Hill_plot_0$dna_code)
+Hill_plot_0 <- left_join(Hill_plot_0, site_info[,c("dna_code","code","unique_site","landuse", "location", "texture")], by= "dna_code")
+write.csv(Hill_plot_0, file="Hill_0_18S.csv")
+
+# q=1 for supplement
+Hill_plot_2 <- estimateD(iNEXT_input_table, q=2,
+                         datatype="abundance",
+                         base="size", min(sample_sums(ps_P_3)))
+Hill_plot_2 <- Hill_plot_2 %>% separate(Assemblage, c("i5", "dna_code"))
+Hill_plot_2$dna_code <- as.numeric(Hill_plot_2$dna_code)
+Hill_plot_2 <- left_join(Hill_plot_2, site_info[,c("dna_code","code","unique_site","landuse", "location", "texture")], by= "dna_code")
+write.csv(Hill_plot_2, file="Hill_2_18S.csv")
+```
+
+```{r rarefaction}
+vb_colors <- c( "#F0E442","#56B4E9","#D55E00", "#009E73")
+
+r <- ggrare(ps_P_3, step = 100, color = "landuse", se=FALSE)
+r <- r + scale_color_manual(values=vb_colors) +
+  coord_cartesian(c(0,10000)) +
+  geom_vline(xintercept=870) + xlab("Sample read depth")
+r
+saveRDS(r, "rarefaction_protists.RDS")
+```

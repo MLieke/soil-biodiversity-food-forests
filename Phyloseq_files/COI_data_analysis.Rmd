@@ -1,0 +1,207 @@
+---
+title: "COI_data_analysis"
+output: html_document
+date: "2024-10-09"
+---
+
+## COI using OTUs from vsearch and Taxalogue
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(phyloseq)
+library(MicEco)
+library(metagenomeSeq)
+library(metagMisc)
+library(vegan)
+library(iNEXT)
+library(ggforce)
+library(indicspecies)
+library(plotly)
+```
+
+```{r data}
+ps <- readRDS("ps_COI_OTU_sp.rds")
+tax_table(ps) <- apply(tax_table(ps), 2, function(x) ifelse(x == "", NA, x))
+```
+
+```{r schijndel and duplos}
+ps_schijndel <- subset_samples(ps, location=="Schijndel")
+ps <- subset_samples(ps, location!="Schijndel")
+
+ps_duplos <- subset_samples(ps, vb_code == "VB087" | vb_code == "VB087B" | vb_code == "VB123" | vb_code == "VB123B")
+ps <- subset_samples(ps, vb_code!="VB087B" & vb_code!="VB123B")
+```
+
+```{r subset taxa}
+ps_co <- subset_taxa(ps, Class == "Collembola")
+ps_mi <- subset_taxa(ps, Order == "Sarcoptiformes" | Order == "Mesostigmata" | Order == "Trombidiformes")
+ps_ma <- subset_taxa(ps, Class == "Collembola" | Order == "Sarcoptiformes" | Order == "Mesostigmata" | Order == "Trombidiformes")
+# rownames(otu_table(ps_mi))[rowSums(otu_table(ps_mi)) < 1000]
+ps_co_2 <- prune_samples(sample_sums(ps_co) > 1000, ps_co)
+ps_mi_2 <- prune_samples(sample_sums(ps_mi) > 500, ps_mi)
+ps_ma_2 <- prune_samples(sample_sums(ps_ma) > 1000, ps_ma)
+ps_co_3 <- prune_taxa(taxa_sums(ps_co_2) > 0, ps_co_2)
+ps_mi_3 <- prune_taxa(taxa_sums(ps_mi_2) > 0, ps_mi_2)
+ps_ma_3 <- prune_taxa(taxa_sums(ps_ma_2) > 0, ps_ma_2)
+saveRDS(ps_ma_3, "ps_microarthropods.RDS")
+```
+
+```{r distance matrix}
+#collembola
+recoding <- read.csv2("dna_codes_COI.csv")
+OTU <- as(otu_table(ps_co_3), "matrix")
+# transpose if necessary
+if(taxa_are_rows(ps_co_3)){OTU <- t(OTU)}
+# Coerce to data.frame
+OTUdf = as.data.frame(OTU)
+OTU_string <- paste0("OTU", seq(ntaxa(ps_co_3)))
+colnames(OTUdf) <- OTU_string
+OTUdf$dna_code <- rownames(OTUdf)
+OTUdf <- OTUdf %>% left_join(recoding[,c("dna_code", "vb_code")], by="dna_code")
+rownames(OTUdf) <- OTUdf$vb_code
+OTUdf_co <- OTUdf %>% select(-c(dna_code, vb_code))
+write.csv(OTUdf_co, "COI_OTU_co_P2.csv")
+COI_co_dist <- avgdist(OTUdf_co, sample=min(sample_sums(ps_co_3)), iterations=50)
+saveRDS(COI_co_dist, "COI_co_dist_1000.rds")
+
+#mites
+recoding <- read.csv2("dna_codes_COI.csv")
+OTU <- as(otu_table(ps_mi_3), "matrix")
+# transpose if necessary
+if(taxa_are_rows(ps_mi_3)){OTU <- t(OTU)}
+# Coerce to data.frame
+OTUdf = as.data.frame(OTU)
+OTU_string <- paste0("OTU", seq(ntaxa(ps_mi_3)))
+colnames(OTUdf) <- OTU_string
+OTUdf$dna_code <- rownames(OTUdf)
+OTUdf <- OTUdf %>% left_join(recoding[,c("dna_code", "vb_code")], by="dna_code")
+rownames(OTUdf) <- OTUdf$vb_code
+OTUdf_mi <- OTUdf %>% select(-c(dna_code, vb_code))
+# write.csv(OTUdf_mi, "COI_OTU_mi_P2_500.csv")
+# COI_mite_dist <- avgdist(OTUdf_mi, sample=min(sample_sums(ps_mi_3)), iterations=50)
+# saveRDS(COI_mite_dist, "COI_mi_dist_500.rds")
+
+#collembola + mites
+recoding <- read.csv2("dna_codes_COI.csv")
+OTU <- as(otu_table(ps_ma_3), "matrix")
+# transpose if necessary
+if(taxa_are_rows(ps_ma_3)){OTU <- t(OTU)}
+# Coerce to data.frame
+OTUdf = as.data.frame(OTU)
+OTU_string <- paste0("OTU", seq(ntaxa(ps_ma_3)))
+colnames(OTUdf) <- OTU_string
+OTUdf$dna_code <- rownames(OTUdf)
+OTUdf <- OTUdf %>% left_join(recoding[,c("dna_code", "vb_code")], by="dna_code")
+rownames(OTUdf) <- OTUdf$vb_code
+OTUdf_ma <- OTUdf %>% select(-c(dna_code, vb_code))
+write.csv(OTUdf_ma, "COI_OTU_ma_P2.csv")
+COI_ma_dist <- avgdist(OTUdf_ma, sample=min(sample_sums(ps_ma_3)), iterations=50)
+saveRDS(COI_ma_dist, "COI_ma_dist_1000.rds")
+```
+
+```{r depth cutoff}
+#check read depth
+read_abund <- data.frame(abund = rowSums(otu_table(ps_ma)))
+read_abund$dna_code <- rownames(read_abund)
+read_abund <- read_abund %>% left_join(recoding[,c("dna_code", "vb_code","landuse")], by="dna_code")
+read_abund %>% ggplot(aes(x=1, y=abund, label=vb_code)) +
+  geom_jitter() + 
+  scale_y_log10() +
+  geom_jitter(position = position_jitter(seed = 1)) + ggrepel::geom_text_repel(position = position_jitter(seed = 1))
+
+read_abund %>% arrange(abund) %>% 
+  ggplot(aes(x=1:nrow(.),y=abund)) + geom_line()
+
+read_abund %>% arrange(abund) %>% print(n=30)
+
+#Collembola: clearly samples with no reads thrown out: VB001, VB121, VB147, VB061, VB141. Then two with very low reads: VB045 (193)
+# and VB019 (196). From 1000 reads onward most samples. Just 6 samples between 1000 and 3000 reads, but 1000 seems a reasonable cutoff
+```
+
+``` {r read vs asv richness}
+# Extract sample-wise read counts
+sample_reads <- sample_sums(otu_table(ps_ma_3))
+hist(sample_reads, breaks=100)
+
+# Extract sample-wise counts of ASVs
+sample_asvs <- sample_sums(otu_table(ps_ma_3) > 0)
+
+plot(sample_reads, sample_asvs,
+     xlab = "Number of Reads",
+     ylab = "Number of ASVs",
+     main = "Number of Reads vs Number of ASVs per Sample")
+abline(lm(sample_asvs ~ sample_reads))
+
+# Calculate R-squared and p-value
+rsquared <- summary(lm(sample_asvs~sample_reads))$r.squared
+p_value <- summary(lm(sample_asvs~sample_reads))$coefficients[2, 4]
+
+# Add R-squared and p-value to the plot
+text(x = max(sample_reads) * 0.7, y = max(sample_asvs) * 0.8,
+     labels = paste("R² =", round(rsquared, 2), "\np =", signif(p_value, digits = 3)),
+     adj = c(-1, 0))
+```
+
+```{r iNEXT}
+min(rowSums(otu_table(ps_co_2)))
+
+site_info <- read_csv2("dna_codes_COI.csv")
+iNEXT_input_table <- otu_table(ps_co_2) %>%
+  t() %>%
+  data.frame()
+set.seed(183494)
+Hill_plot_1 <- estimateD(iNEXT_input_table, q = 1,
+                           datatype = "abundance",
+                          base = "size", min(sample_sums(ps_co_2)))
+Hill_plot_1$Assemblage <- gsub("X", "", Hill_plot_1$Assemblage)
+Hill_plot_1 <- left_join(Hill_plot_1, site_info[,c("dna_code","unique_site","landuse", "location", "texture")], 
+                         by=c("Assemblage"= "dna_code"))
+write.csv(Hill_plot_1, file="Hill_1_COI_co.csv")
+
+# q=0 for supplement
+Hill_plot_0 <- estimateD(iNEXT_input_table, q=0,
+                         datatype="abundance",
+                         base="size", min(sample_sums(ps_co_2)))
+Hill_plot_0$Assemblage <- gsub("X", "", Hill_plot_0$Assemblage)
+Hill_plot_0 <- left_join(Hill_plot_0, site_info[,c("dna_code","unique_site","landuse", "location", "texture")], 
+                         by=c("Assemblage"= "dna_code"))
+write.csv(Hill_plot_0, file="Hill_0_COI_co.csv")
+
+# q=2 for supplement
+Hill_plot_2 <- estimateD(iNEXT_input_table, q=2,
+                         datatype="abundance",
+                         base="size", min(sample_sums(ps_co_2)))
+Hill_plot_2$Assemblage <- gsub("X", "", Hill_plot_2$Assemblage)
+Hill_plot_2 <- left_join(Hill_plot_2, site_info[,c("dna_code","unique_site","landuse", "location", "texture")], 
+                         by=c("Assemblage"= "dna_code"))
+write.csv(Hill_plot_2, file="Hill_2_COI_co.csv")
+```
+
+```{r rarefaction}
+vb_colors <- c( "#F0E442","#56B4E9","#D55E00", "#009E73")
+
+r_co <- ggrare(ps_co_3, step = 100, color = "landuse", se=FALSE)
+r_co <- r_co + scale_color_manual(values=vb_colors) +
+  coord_cartesian(xlim = c(0,5000)) +
+  geom_vline(xintercept=1042) + xlab("Sample read depth")
+r_co
+saveRDS(r_co, "rarefaction_collembola.RDS")
+
+r_mi <- ggrare(ps_mi_3, step = 100, color = "landuse", se=FALSE)
+r_mi <- r_mi + scale_color_manual(values=vb_colors) + 
+  coord_cartesian(xlim = c(0,5000)) +
+  geom_vline(xintercept=583) + xlab("Sample read depth")
+r_mi
+saveRDS(r_mi, "rarefaction_mites.RDS")
+
+r_ma <- ggrare(ps_ma_3, step = 100, color = "landuse", se=FALSE)
+r_ma <- r_ma + scale_color_manual(values=vb_colors) + 
+  coord_cartesian(xlim = c(0,5000)) +
+  geom_vline(xintercept=2286) + xlab("Sample read depth")
+r_ma
+saveRDS(r_ma, "rarefaction_macroarthropods.RDS")
+```

@@ -1,0 +1,290 @@
+---
+title: "Model_diagnostics_diversity"
+author: "Lieke"
+date: "2024-06-20"
+output: html_document
+---
+
+```{r packages}
+# general
+library(dplyr)
+library(tidyr)
+library(tibble)
+# diversity indices
+library(iNEXT)
+library(hillR)
+# models
+library(lmerTest)
+library(glmmTMB)
+library(emmeans)
+# diagnostics
+library(DHARMa)
+library(broom.mixed)
+# visualisation
+library(ggplot2)
+```
+
+```{r codes_info}
+codes_info <- read.csv("Data/codes_info.csv")
+```
+
+```{r data}
+diversitylist_D1 <- readRDS("H2.diversitylist_D1.rds")
+diversitylist_D0 <- readRDS("H2.diversitylist_D0.rds")
+```
+
+
+This file contains the code used to perform the model diagnostics for the models for hypothesis 2. 
+Here, the process of arriving at an appropriate model for the diversity measures of each of the species groups is documented. The model formulation is hypothesis-driven and doesn't change. The distributions we try are also based on theory and expectations, but we check if they fit appropriately.
+
+# D1 (effective number of species/taxa)
+
+For bacteria (including Actinobacteria), non-AM fungi ("fungi"),  nematodes, springtails and mites, we use a gamma distribution for the data that is continuous and strictly positive (so without zeros). For protists and mites, the data did not allow a reliable estimation of the location random effect, so we used a GLM with land use as the sole predictor. For protists and nematodes, we let the dispersion vary by land use to account for heterogeneity of variance. 
+
+For the macrofauna, namely the isopods, millipedes, centipedes, harvestmen, carabids and earthworms, we use a Tweedie distribution. For the harvestmen, the data did not allow a reliable estimation of the location random effect, so we used a GLM with land use as the sole predictor. For the centipedes, there was some underdispersion leading to a consevrative bias.
+
+## Bacteria (16S), non-AM fungi (ITS), springtails - gamma
+
+```{r bacteria_1D}
+df <- diversitylist_D1[["bacteria"]]
+# or [["fungi"]] 
+df <- diversitylist_D1[["springtails"]] %>%
+  filter(!is.na(D1))
+
+model.g <- glmmTMB(D1 ~ landuse + (1|location),
+                 family = Gamma(link="log"),
+                 data = df) 
+simres <- simulateResiduals(fittedModel = model.g, plot = F)
+plot(simres) 
+summary(model.g)
+
+ggplot(df,aes(landuse, D1))+
+    geom_line(colour="gray",aes(group=location))+
+    geom_point()+
+    scale_colour_brewer(palette="Dark2")
+
+aa <- augment(model.g, data=df)
+(gg2 <- ggplot(aa, aes(.fitted,.resid))
+    + geom_line(aes(group=location),colour="gray")
+    + geom_point(aes(shape=landuse))
+    + geom_smooth()
+) 
+
+aa$.fitted0 <- predict(model.g, newdata=transform(df,location=NA),type="response")
+aa$.resid0 <- df$D1-aa$.fitted0
+(gg3 <- ggplot(aa, aes(.fitted0,.resid0))
+    + geom_line(aes(group=location),colour="gray")
+    + geom_point(aes(shape=landuse))
+    + geom_smooth()
+) 
+lme4:::dotplot.ranef.mer(ranef(model.g)$cond) 
+
+```
+
+## Protists (18S) - gamma without RE, but with dispformula =~landuse
+
+```{r protists_1D}
+df <- diversitylist_D1[["protists"]] %>%
+  filter(!is.na(D1))
+
+# without location, but with dispformula
+model.disp_noRE <- glmmTMB(D1 ~ landuse,
+                 family = Gamma(link="log"),
+                 dispformula = ~landuse,
+                 data = df) 
+simres <- simulateResiduals(fittedModel = model.disp_noRE, plot = F)
+plot(simres) # KS test and dispersion test and Levene significant
+summary(model.disp_noRE)
+testDispersion(simres)
+performance::r2(model.disp_noRE) # Nagelkerke R2 0.08
+
+# without location, without dispformula
+model.g_noRE <- glmmTMB(D1 ~ landuse,
+                 family = Gamma(link="log"),
+                 dispformula = ~1,
+                 data = df) 
+plot(simulateResiduals(fittedModel = model.g_noRE, plot = F))
+plot(simres) # KS test and dispersion test and Levene significant
+summary(model.g_noRE)
+testDispersion(simres)
+performance::r2(model.disp_noRE) # Nagelkerke R2 0.08
+
+extra_disp <- sqrt(sum(insight::get_variance(model.disp)[["var.intercept"]]))
+
+
+# look at homoskedasticity
+ggplot(df, aes(x = landuse, y = D1)) + geom_boxplot()
+
+performance::r2(model.g) # conditional 0.072 and marginal 0.072 > can't compute RE variance
+```
+
+## Nematodes (18S_N) - gamma with dispformula =~landuse
+
+```{r nematodes_1D}
+df <- diversitylist_D1[["nematodes"]] %>%
+  filter(!is.na(D1))
+
+# Gamma
+model.g <- glmmTMB(D1 ~ landuse + (1|location),
+                 family = Gamma(link="log"),
+                 data = df) 
+plot(simulateResiduals(fittedModel = model.g, plot = F)) # looks good, except for Levene's test
+summary(model.g)
+
+# RE normally distributed?
+print(lme4:::dotplot.ranef.mer(ranef(m)$cond)) # both OK (not too far from normal distribution)
+
+# Gamma with dispformula ~landuse
+model.disp <- glmmTMB(D1 ~ landuse + (1|location),
+                 family = Gamma(link="log"),
+                 dispformula = ~landuse,
+                 data = df) 
+plot(simulateResiduals(fittedModel = model.disp, plot = F)) # looks good, except for Levene's test
+summary(model.disp)
+
+
+```
+
+## Mites - gamma without RE 
+```{r mites_D1}
+df <- diversitylist_D1[["mites"]] %>%
+  filter(!is.na(D1))
+nrow(df) #41
+
+# Gamma
+model.g <- glmmTMB(D1 ~ landuse + (1|location),
+                 family = Gamma(link = "log"),
+                 data = df) 
+simres <- simulateResiduals(fittedModel = model.g, plot = F)
+plot(simres) # looks GOOD - but there was singularity!
+performance::r2(model.g)
+
+# Gamma without RE
+model.g_noRE <- glmmTMB(D1 ~ landuse,
+                 family = Gamma(link = "log"),
+                 data = df) 
+plot(simulateResiduals(fittedModel = model.g_noRE, plot = F))
+performance::r2(model.g_noRE)
+```
+
+## Isopods, millipedes, centipedes, carabids, earthworms - tweedie
+
+```{r simpletweedie_D1}
+df <- diversitylist_D1[["isopods"]]
+# or [["millipedes"]], [["centipedes"]], [["carabids"]], [["earthworms"]]
+
+model <- glmmTMB(D1 ~ landuse + (1|location),
+                 family = tweedie,
+                 data = df) 
+simres <- simulateResiduals(fittedModel = model, plot = F)
+plot(simres)
+summary(model)
+testDispersion(model) # underdispersion > conservative bias
+
+
+aa <- augment(model, data=df)
+(gg2 <- ggplot(aa, aes(.fitted,.resid))
+    + geom_line(aes(group=location),colour="gray")
+    + geom_point(aes(shape=landuse))
+    + geom_smooth()
+) 
+
+aa$.fitted0 <- predict(model, newdata=transform(df,location=NA),type="response")
+aa$.resid0 <- df$D1-aa$.fitted0
+(gg3 <- ggplot(aa, aes(.fitted0,.resid0))
+    + geom_line(aes(group=location),colour="gray")
+    + geom_point(aes(shape=landuse))
+    + geom_smooth()
+)
+(lme4:::dotplot.ranef.mer(ranef(model)$cond)) 
+
+```
+
+## Harvestmen - tweedie without RE
+
+```{r harvestmen_D1}
+df <- diversitylist_D1[["harvestmen"]]
+nrow(df)
+
+# tweedie 
+model <- glmmTMB(D1 ~ landuse + (1|location),
+                 family = tweedie,
+                 data = df) 
+simres <- simulateResiduals(fittedModel = model, plot = F)
+plot(simres) # looks GOOD
+summary(model)
+performance::r2(model) # issue
+
+# tweedie without RE
+model_noRE <- glmmTMB(D1 ~ landuse,
+                 family = tweedie,
+                 data = df) 
+simres <- simulateResiduals(fittedModel = model_noRE, plot = F)
+plot(simres) # looks GOOD
+summary(model_noRE)
+performance::r2(model_noRE) # not possible, not supported
+```
+
+# D0
+
+For the sequencing data, the 0D, ASV richness, is not an integer because of the rarefaction approach. Therefore, the 0D data for the microorganisms and micro- and mesofauna is modelled with a gamma distribution (strictly positive, continuous, without zeroes).
+
+For the macrofauna, the species richness is a count, an integer. We therefore model it with a Poisson distribution (in case of overdispersion we would shift to negative binomial, but this was not necessary here).
+
+## Bacteria, non-AM fungi, nematodes (18S_N), springtails, mites - gamma 
+
+```{r simplegamma_0D}
+df <- diversitylist_D0[["bacteria_q0"]]
+# or [["fungi_q0"]], [["nematodes_q0"]], [["spingtails_q0"]], [["mites_q0"]]
+
+# Gamma
+model.g <- glmmTMB(D0 ~ landuse + (1|location),
+                 family = Gamma(link="log"),
+                 data = df) 
+simres <- simulateResiduals(fittedModel = model.g, plot = F)
+plot(simres)
+summary(model.g)
+performance::r2(model.g)
+
+```
+
+
+## Protists (18S) - gamma with dipformula=~landuse
+
+```{r protists_0D}
+df <- diversitylist_D0[["protists_q0"]]
+
+# Gamma
+model.g <- glmmTMB(D0 ~ landuse + (1|location),
+                 family = Gamma(link="log"),
+                 data = df) 
+simres <- simulateResiduals(fittedModel = model.g, plot = F)
+plot(simres) # outlier and levene significant
+summary(model.g)
+performance::r2(model.g) 
+
+# Gamma with dispersion varying with landuse
+# as n = 141, this may be acceptable
+model.disp <- glmmTMB(D0 ~ landuse + (1|location),
+                 family = Gamma(link="log"),
+                 dispformula = ~landuse,
+                 data = df) 
+plot(simulateResiduals(fittedModel = model.disp, plot = F))
+```
+
+
+## Isopods, millipedes, centipedes, harvestmen, carabids, earthworms - Poisson
+ 
+```{r poisson_D0}
+df <- diversitylist_D0[["isopods"]]
+# or [["millipedes"]], [["centipedes"]], [["harvestmen"]], [["carabids"]], [["earthworms"]]
+
+model.p <- glmmTMB(D0 ~ landuse + (1|location),
+                   family = poisson,
+                   data=df)
+simres <- simulateResiduals(fittedModel = model.p, plot = F)
+plot(simres)
+summary(model.p)
+testDispersion(model.p) 
+performance::r2(model.p) 
+```

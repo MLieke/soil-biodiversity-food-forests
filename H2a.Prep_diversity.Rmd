@@ -1,0 +1,219 @@
+---
+title: "H2a.Prep_diversity"
+---
+
+```{r packages}
+# general
+library(tidyverse)
+# diversity indices
+library(iNEXT)
+library(hillR)
+```
+
+```{r functions}
+source("0b.functions.R")
+```
+
+# Data
+
+```{r codes_info}
+codes_info <- read.csv("Data/codes_info.csv")
+```
+
+## Sequencing data  
+The sequencing data was pre-processed elsewhere into dataframes with diversity measures per sample plot.
+
+```{r data_seq}
+# read dataframes with 1D at the plot level
+#q=1
+bacteria <- read.csv("Data/Hill_1_16S.csv") %>% rename(D1 = qD)
+protists <- read.csv("Data/Hill_1_18S.csv") %>% rename(D1 = qD)
+nematodes <- read.csv("Data/Hill_1_18S_N.csv") %>% rename(D1 = qD)
+fungi <- read.csv("Data/Hill_1_ITS.csv") %>% rename(D1 = qD)
+springtails <- read.csv("Data/Hill_1_COI_co.csv") %>% rename(D1 = qD) %>% rename(dna_code = Assemblage)
+mites <- read.csv("Data/Hill_1_COI_mi.csv") %>% rename(D1 = qD) %>% rename(dna_code = Assemblage)
+
+#q=0
+bacteria_q0 <- read.csv("Data/Hill_0_16S.csv") %>% rename(D0 = qD)
+protists_q0 <- read.csv("Data/Hill_0_18S.csv") %>% rename(D0 = qD)
+nematodes_q0 <- read.csv("Data/Hill_0_18S_N.csv") %>% rename(D0 = qD)
+fungi_q0 <- read.csv("Data/Hill_0_ITS.csv") %>% rename(D0 = qD)
+springtails_q0 <- read.csv("Data/Hill_0_COI_co.csv") %>% rename(D0 = qD) %>% rename(dna_code = Assemblage)
+mites_q0 <- read.csv("Data/Hill_0_COI_mi.csv") %>% rename(D0 = qD) %>% rename(dna_code = Assemblage)
+```
+
+## Non-sequencing data  
+The non-sequencing species data, which is the data of the macrofauna here, is processed here.
+
+```{r data_nonseq}
+# read in raw dataframes
+isopods <- read.csv("Data/Isopods.csv") %>%
+  as.data.frame()
+
+centipedes <- read.csv("Data/Centipedes.csv") %>%
+  as.data.frame()
+
+millipedes <- read.csv("Data/Millipedes.csv") %>%
+  as.data.frame()
+
+harvestmen <- read.csv("Data/Harvestmen.csv") %>%
+  select(!c(Stage, Sex)) %>%
+  as.data.frame()
+
+carabids <- read.csv("Data/Carabids.csv") %>%
+  as.data.frame()
+
+# put dataframes in list
+dflist <- list("isopods" = isopods,
+               "centipedes" = centipedes,
+               "millipedes" = millipedes,
+               "harvestmen" = harvestmen,
+               "carabids" = carabids)
+
+# read in list of samples that were sampled 
+# compare with this list --> if given sample from this list not present in dataframe of a species group, it means that there were 0 individuals of this group in this sample vs. certain samples got lost and should not be attributed value 0
+sampled <- read.csv("Data/pitfall_sampled.csv")
+
+# complete dataframes and give code to be put as rowname later on
+for(i in 1:length(dflist)) {
+  dflist[[i]] <- dflist[[i]] %>%
+    # sum "abundances" (activity-density) of same species in same trap
+    group_by(site, session, location, landuse, trap, species) %>% # if we want to sum two traps per site, we here omit "trap" from the group_by
+    reframe(abundance = sum(abundance)) %>%
+    ungroup() %>% 
+    # right_join with list of sampled "samples" to obtain NA values for study sites that were sampled but did not contain any individuals of this species group
+    right_join(sampled) %>%
+    # complete with species, so that there is abundance 0 for each species without individuals in this sample (important for species-abundance matrix later on)
+    complete(nesting(session, site, location, landuse, trap), species) %>%
+    # remove "NA" species, no longer necessary (were the result of adding the "empty samples")
+    filter(!is.na(species)) %>%
+    # abundance NA to 0
+    mutate(abundance = replace_na(abundance, 0)) %>%
+    # give code to be used as rowname later on
+    mutate(code = paste0(session, site, trap))
+}
+    
+earthworms <- read.csv("Data/Earthworms.csv") %>%
+  select(!biomass) %>%
+    # no completion with empty samples needed here, dataframe already contains rows with "empty" for samples that were sampled but did not contain any earthworms
+  # complete with species, so that there is abundance 0 for each species without individuals in this sample (important for species-abundance matrix later on and for retaining samples that were not empty, contained earthworms, but did not contain any adults, which would otherwise be removed when filtering out rows with head, broken, juvenile_*)
+  complete(nesting(code, site, location, landuse), species) %>%
+  # for diversity, we don't take juveniles and 'heads' into account (for abundance we do)
+  # 7 samples contained earthworms, but no adults, so these get value 0 for adult diversity
+  filter(!(species %in% c("head", "broken", "juvenile_nopigment", "juvenile_pigment"))) %>%
+  replace(is.na(.), 0) %>%
+  # remove "empty" rows, not longer needed now that dataframe is completed with 0's
+  filter(!(species == "empty"))
+
+# add earthworms to dflist
+dflist <- append(dflist, 
+                 list("earthworms" = as.data.frame(earthworms)))
+
+# in all dataframes: convert landuse and session to factor
+for(g in names(dflist)){
+  dflist[[g]] <- dflist[[g]] %>%
+    mutate(landuse = factor(landuse, levels = c("Food_forest",
+                                                "Forest",
+                                                "Grassland",
+                                                "Arable_field"))) %>%
+    # also make a factor out of session if the column session exists in the dataframe
+    {if("session" %in% colnames(dflist[[g]])) mutate(., session = factor(session)) else .}
+}
+
+```
+
+Here, the macrofauna data is transformed into species-abundance matrices.
+
+```{r specab_nonseq}
+specablist <- list()
+
+# for isopods, centipedes, millipedes and carabids: averaging species-abundances of the three first sessions per trap; for harvestmen: averaging species-abundances of all four sessions per trap
+for(g in c("isopods", "centipedes", "millipedes", "carabids", "harvestmen")) {
+  # df.name <- paste0(g, "_specab_avg")
+  specablist[[g]] <- dflist[[g]] %>% 
+    mutate(session = factor(session),
+           trap = factor(trap)) %>%
+    # exclude session 4 in case not harvestmen
+    {if(g != "harvestmen") filter(., session != 4) else .} %>%
+    # make species-abundance matrix
+    pivot_wider(names_from = species,
+                values_from = abundance) %>%
+    # average across sessions per trap
+    group_by(site, trap) %>%
+    summarise(across(where(is.numeric), mean)) %>%
+    ungroup() %>%
+    # give code and remove extra columns
+    mutate(code = paste0(site, trap)) %>%
+    select(!c(site, trap)) %>%
+    column_to_rownames(var = "code")
+}
+
+# for earthworms
+specablist[["earthworms"]] <- dflist[["earthworms"]] %>%
+      select(c(code, species, abundance)) %>%
+      pivot_wider(names_from = species,
+                values_from = abundance) %>%
+      column_to_rownames(var = "code")
+```
+
+Here, diversity measures are calculated for the macrofauna.
+
+```{r diversity_nonseq}
+diversitylist <- list()
+
+for(m in names(specablist)){
+  df <- data.frame(D0 = rowSums(specablist[[m]]!= 0))
+  diversitylist[[m]] <- df %>%
+  # if 0D is zero, 1D and 2D also need to be zero (if not coded like this, exp(H') = 1 if SR = 0)
+    mutate(D1 = ifelse(D0 > 0,
+                       hill_taxa(comm = specablist[[m]], q = 1),
+                       0),
+           D2 = ifelse(D0 > 0,
+                       hill_taxa(comm = specablist[[m]], q = 2),
+                       0)) %>%
+    rownames_to_column(var = "code") %>%
+    # re-add information on location and landuse
+    left_join(codes_info) %>%
+    mutate(landuse = factor(landuse, levels = c("Food_forest",
+                                                "Forest",
+                                                "Grassland",
+                                                "Arable_field")))
+}
+
+diversitylist_D0 <- diversitylist
+diversitylist_D1 <- diversitylist
+```
+
+## Combine sequencing and non-sequencing data
+
+Now, the dataframes of the sequencing data are added to the list of dataframes with diversitymeasures of the macrofauna.
+
+```{r diversity_all_D0}
+# add dataframes of sequencing data to diversitylist
+for(m in c("bacteria_q0", "fungi_q0", "protists_q0", "nematodes_q0", 
+           "springtails_q0", "mites_q0")){
+  df <- get(m) %>%
+    mutate(landuse = factor(landuse, levels = c("Food_forest",
+                                                "Forest",
+                                                "Grassland",
+                                                "Arable_field")))
+  diversitylist_D0[[m]] <- df 
+}
+
+saveRDS(diversitylist_D0, "H2.diversitylist_D0.rds")
+```
+
+```{r diversity_all_D1}
+# add dataframes of sequencing data to diversitylist
+for(m in c("bacteria", "fungi", "protists", "nematodes", 
+           "springtails", "mites")){
+  df <- get(m) %>%
+    mutate(landuse = factor(landuse, levels = c("Food_forest",
+                                                "Forest",
+                                                "Grassland",
+                                                "Arable_field")))
+  diversitylist_D1[[m]] <- df 
+}
+
+saveRDS(diversitylist_D1, "H2.diversitylist_D1.rds")
+```

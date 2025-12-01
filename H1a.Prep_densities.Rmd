@@ -1,0 +1,173 @@
+---
+title: "DA_abundance/biomass"
+author: "Lieke"
+date: "2024-06-20"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      eval = TRUE, results = FALSE) 
+```
+
+```{r packages}
+# general
+library(dplyr)
+library(tidyr)
+library(tibble)
+```
+
+```{r functions}
+source("0b.functions.R")
+```
+
+# Data
+
+```{r codes_info}
+codes_info <- read.csv("Data/codes_info.csv")
+
+# pitfall trap data: read in a list of samples that were sampled 
+# if a sample from this list is not present in the dataframe of a species group, it means that there were 0 individuals of this group in this sample, rather than that this sample was not or not properly sampled and should be attributed NA instead of 0
+sampled <- read.csv("Data/pitfall_sampled.csv")
+```
+
+
+```{r data_counts}
+
+# read in raw dataframes
+
+# count data: abundance and activity-density (for ease of coding all referred to as abundance)
+isopods <- read.csv("Data/Isopods.csv") %>%
+  as.data.frame()
+
+centipedes <- read.csv("Data/Centipedes.csv") %>%
+  as.data.frame()
+
+millipedes <- read.csv("Data/Millipedes.csv") %>%
+  as.data.frame()
+
+harvestmen <- read.csv("Data/Harvestmen.csv") %>%
+  select(!c(Stage, Sex)) %>%
+  as.data.frame()
+
+carabids <- read.csv("Data/Carabids.csv") %>%
+  as.data.frame()
+
+mites <- read.csv("Data/Mites.csv") %>%
+  as.data.frame() %>%
+  # transform to abundance per g of dry soil instead of kg
+  mutate(abundance = abundance/1000)
+
+springtails <- read.csv("Data/Springtails.csv") %>%
+  as.data.frame() %>%
+  # g instead of kg
+  mutate(abundance = abundance/1000)
+
+nematodes <- read.csv("Data/Nematodes.csv") %>%
+  as.data.frame() %>%
+  # g instead of kg
+  mutate(abundance = abundance/1000)
+
+
+
+# put dataframes of data from pitfall traps (macroarthropods) in list
+dflist <- list("isopods" = isopods,
+               "centipedes" = centipedes,
+               "millipedes" = millipedes,
+               "harvestmen" = harvestmen,
+               "carabids" = carabids)
+
+
+
+# complete dataframes of pitfall trap data and give code to be put as rowname later on
+# also average the abundances across the sessions: for harvestmen of 4 sessions, for the others of first 3 sessions
+for(g in names(dflist)) {
+  dflist[[g]] <- dflist[[g]] %>%
+    # exclude session 4 in case not harvestmen
+    {if(g != "harvestmen") filter(., session != 4) else .} %>%
+    # sum "abundances" (AD) of same species in same trap
+    group_by(site, session, location, landuse, trap, species) %>% # if we want to sum two traps per site, we here omit "trap" from the group_by
+    reframe(abundance = sum(abundance)) %>%
+    ungroup() %>% 
+    # right_join with list of sampled "samples" to obtain NA values for traps that were sampled but did not contain any individuals of this species group
+    {if (g != "harvestmen") right_join(., sampled %>% filter(session != 4)) else 
+             right_join(., sampled) } %>%
+    # complete with species, so that there is abundance 0 for each species without individuals in this sample (important for species-abundance matrix, but here actually not so much)
+    complete(nesting(session, site, location, landuse, trap), species) %>%
+    # remove "NA" species, no longer necessary (were the result of adding the "empty samples")
+    filter(!is.na(species)) %>%
+    # abundance NA to 0
+    mutate(abundance = replace_na(abundance, 0)) %>%
+    # average abundances across sessions (could have been combined with previous code)
+    group_by(site, location, landuse, trap, species) %>%
+    summarise(abundance = mean(abundance)) %>%
+    # give code to be used as rowname later on
+    mutate(code = paste0(site, trap))
+}
+    
+earthworms <- read.csv("Data/Earthworms.csv") %>%
+  select(!biomass) %>%
+  # for abundance, we remove broken but use the head count as extra individuals
+  filter(!(species == "broken")) %>%
+  # no completion with empty samples needed here, dataframe already contains rows with "empty" for samples that were sampled but did not contain any earthworms
+  # complete with species, so that there is abundance 0 for each species without individuals in this sample (important for species-abundance matrix later on)
+  complete(nesting(code, site, location, landuse), species) %>%
+  replace(is.na(.), 0) %>%
+  # remove "empty" rows, not longer needed now that dataframe is completed with 0's
+  filter(!(species == "empty"))
+
+# add earthworms, mites, springtails and nematodes to dflist
+dflist <- append(dflist, 
+                 list("earthworms" = as.data.frame(earthworms),
+                      "mites" = mites,
+                      "springtails" = springtails,
+                      "nematodes" = nematodes))
+
+# Now we may want to sum the abundances/activity-density of all species into a total density per species group
+
+for(g in names(dflist)) {
+  dflist[[g]] <- dflist[[g]] %>%
+    ungroup() %>%
+    group_by(code, site, location, landuse) %>% # "trap" not included but can be found as part of "code" for pitfall trap data
+    summarise(abundance = sum(abundance)) %>%
+    filter(!is.na(abundance))
+}
+```
+
+```{r data_biomass}
+# biomass data from PLFA/NLFA analyses
+bacteria <- read.csv("Data/PLFA_NLFA.csv") %>%
+  select(c(code, site, location, landuse, Bacteria_total)) %>%
+  rename(biomass = Bacteria_total)
+
+fungi <- read.csv("Data/PLFA_NLFA.csv") %>% # non-AMF fungi
+  select(c(code, site, location, landuse, Fungi_total)) %>%
+  rename(biomass = Fungi_total)
+
+AMF <- read.csv("Data/PLFA_NLFA.csv") %>% 
+  select(c(code, site, location, landuse, AMF_NLFA)) %>%
+  rename(biomass = AMF_NLFA) %>% 
+  filter(!is.na(biomass))
+```
+
+```{r data_combined}
+# add biomass df to dflist
+dflist <- append(dflist, 
+                 list("bacteria" = as.data.frame(bacteria),
+                 "fungi" = as.data.frame(fungi),
+                 "AMF" = as.data.frame(AMF)))
+
+# And in all dataframes: convert landuse and session to factor
+for(g in names(dflist)) {
+  dflist[[g]] <- dflist[[g]] %>%
+    mutate(landuse = factor(landuse, levels = c("Food_forest",
+                                                "Forest",
+                                                "Grassland",
+                                                "Arable_field"))) %>%
+    # also make a factor out of session if the column session exists in the dataframe
+    {if("session" %in% colnames(dflist[[g]])) mutate(., session = factor(session)) else .}
+}
+
+# write .rds to be used for model diagnostics etc.
+saveRDS(dflist, "H1.densitylist.rds")
+```

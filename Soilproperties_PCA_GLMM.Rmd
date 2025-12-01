@@ -1,0 +1,514 @@
+---
+title: "Soil properties analyses"
+author: "Lieke"
+date: "2024-04-16"
+output: html_document
+---
+
+```{r packages}
+library(tidyverse)
+library(stats)
+library(FactoMineR)
+library(factoextra)
+library(ggforce)
+library(ggrepel)
+
+# GLMMs
+library(glmmTMB)
+library(DHARMa)
+library(future)
+library(future.apply)
+library(lme4)
+source("functions.R")
+library(report)
+library(patchwork)
+```
+
+```{r data}
+soilprop <- read.csv("Data/Chemphys.csv") %>% 
+  dplyr::select(c(code, site, location, landuse, soiltexture, pH_KCl,
+                  C_total, N_total,
+                  P_total, P_Olsen, bulkdensity)) 
+  # soiltexture not possible because not numeric
+
+soilprop_long <- pivot_longer(soilprop, cols = c("bulkdensity", "pH_KCl", "C_total", "N_total", "P_total"),
+                        names_to = "property") %>%
+  mutate(landuse = factor(landuse, levels = c("Food_forest","Forest","Grassland","Arable_field")))
+```
+
+# PCA
+```{r pca_main}
+colSums(is.na(soilprop%>% select(!(c(code, location, landuse, soiltexture))))) # no NA's to remove 
+soilprop$loc_lu <- paste(soilprop$location, soilprop$landuse, sep="_") # to show both landuse and location on plot
+soilprop_no_NA <- na.omit(soilprop)
+soilprop_no_NA$landuse <- factor(soilprop_no_NA$landuse, levels=c("Food_forest","Forest","Grassland","Arable_field"))
+
+pca_result <- prcomp(select(soilprop_no_NA, c(pH_KCl, C_total, N_total, P_total, 
+                                   # P_Olsen, 
+                                   bulkdensity)), scale. = TRUE) 
+
+scores <- as.data.frame(pca_result$x)
+scores$location <- soilprop_no_NA$location
+scores$landuse <- soilprop_no_NA$landuse
+
+loadings <- as.data.frame(pca_result$rotation)
+loadings$Variable <- rownames(loadings)
+loadings$var_labels <- c("pH KCl", "Total C mg/kg", "Total N mg/kg", "Total P mg/kg", #"Olsen P mg/kg",
+                         "Bulk density")
+site_level_scores <- scores %>% group_by(location, landuse) %>% summarise(PC1=mean(PC1), PC2=mean(PC2))
+centroids <- scores %>% group_by(landuse) %>% summarise(centroid1=mean(PC1), centroid2=mean(PC2))
+
+PCA_biplot_m <- ggplot() +
+  # PCA scores as points
+  geom_point(data = scores, aes(x = PC1, y = PC2, color = landuse), size = 2.5, shape=16) + 
+  # centroids as points
+  geom_point(data= centroids, aes(x = centroid1, y=centroid2, bg=landuse), size = 3.5, shape = 21, stroke=1.5, col="black") +
+  # PCA loadings (arrows)
+  geom_segment(data = loadings, aes(x = 0, y = 0, xend = PC1*5, yend = PC2*5), 
+               arrow = arrow(length = unit(0.2, "cm")), color = "black") +
+  
+  # Loadings labels
+  geom_text_repel(data = loadings, aes(x = PC1*5, y = PC2*5, label = var_labels), color = "black") +
+  
+  # Axis labels
+  xlab(paste0("PC1 (", round(summary(pca_result)$importance[2,1] * 100, 1), "%)")) +
+  ylab(paste0("PC2 (", round(summary(pca_result)$importance[2,2] * 100, 1), "%)")) +
+  
+  # Theme customization
+  theme_minimal(base_size = 14) +
+  scale_color_manual(values = c("Forest" = "#D55E00", "Food_forest" = "#56B4E9", "Grassland" = "#009E73","Arable_field"= "#F0E442")) +
+  scale_fill_manual(values = c("Forest" = "#D55E00", "Food_forest" = "#56B4E9", "Grassland" = "#009E73","Arable_field"= "#F0E442")) +
+  theme(legend.position = "right")
+PCA_biplot_m
+ggsave("pca_biplot_m.svg", PCA_biplot_m, width = 300, height = 250, unit="mm", dpi=600)
+```
+
+```{r pca_suppl}
+PCA_biplot_s <- ggplot() +
+  # PCA scores as points
+  geom_point(data = scores, aes(x = PC1, y = PC2, color = landuse, shape = location), size = 3) +
+  
+  # PCA loadings (arrows)
+  geom_segment(data = loadings, aes(x = 0, y = 0, xend = PC1*5, yend = PC2*5), 
+               arrow = arrow(length = unit(0.2, "cm")), color = "black") +
+  
+  # Loadings labels
+  geom_text_repel(data = loadings, aes(x = PC1*5, y = PC2*5, label = var_labels), color = "black") +
+  
+  # Axis labels
+  xlab(paste0("PC1 (", round(summary(pca_result)$importance[2,1] * 100, 1), "%)")) +
+  ylab(paste0("PC2 (", round(summary(pca_result)$importance[2,2] * 100, 1), "%)")) +
+  
+  # Theme customization
+  theme_minimal(base_size = 14) +
+  scale_color_manual(values = c("Forest" = "#D55E00", "Food_forest" = "#56B4E9", "Grassland" = "#009E73","Arable_field"= "#F0E442")) +
+        scale_shape_manual(values = c(0, 1, 2, 3, 4, 5,
+                                6, 7, 8, 10, 11, 15,
+                                16, 17, 18)) +
+  theme(legend.position = "right")
+
+ggsave("pca_biplot_s.svg", PCA_biplot_s, width = 300, height = 250, unit="mm", dpi=600)
+```
+
+# GLMMs
+
+All of the soil properties analysed here are strictly positive continuous values (so without zeroes as well).
+Therefore, we would use a gamma distribution, with a log link.
+
+If possible, we formulate the model as Y ~ landuse + (1|location)
+
+## Model diagnostics
+
+### BD - gamma - OK
+
+```{r BD_diagn}
+model <- glmmTMB(bulkdensity ~ landuse + (1|location),
+                 family= Gamma(link="log"), 
+                 data = soilprop) 
+
+simres <- simulateResiduals(fittedModel = model, plot = F)
+plot(simres) # KS test p = 0.01 and somewhat unequal variance, but I wouldn't consider this problematic
+# plot against landuse
+plotResiduals(simres, soilprop[!is.na(soilprop$bulkdensity),]$landuse)
+```
+
+### pH - gamma with disp ~ landuse - not great but probably acceptable/sufficiently useful
+
+```{r pH_diagn}
+# basic model
+model <- glmmTMB(pH_KCl ~ landuse + (1|location),
+                 family= Gamma(link="log"), 
+                 data = soilprop) 
+
+simres <- simulateResiduals(fittedModel = model, plot = F)
+plot(simres) # KS test p = 0.046 but QQplot almost linear so not that problematic I think, but unequal variance, likely due to high spread in forests and low spread in croplands 
+
+# plot against landuse
+plotResiduals(simres, soilprop[!is.na(soilprop$pH),]$landuse)
+
+# model with variable dispersion
+model.disp <- glmmTMB(pH_KCl ~ landuse + (1|location),
+                 dispformula = ~landuse,
+                 family= Gamma(link="log"), 
+                 data = soilprop) 
+
+simres <- simulateResiduals(fittedModel = model.disp, plot = F)
+plot(simres) # less problematic unequal variance, but now QQplot bit less nice
+
+# plot against landuse
+plotResiduals(simres, soilprop[!is.na(soilprop$pH),]$landuse)
+```
+
+### C - gamma - OK
+
+```{r C_diagn}
+# basic model
+model <- glmmTMB(C_total ~ landuse + (1|location),
+                 family= Gamma(link="log"), 
+                 data = soilprop) 
+
+simres <- simulateResiduals(fittedModel = model, plot = F)
+plot(simres) # looks great
+```
+
+### N - gamma - OK
+
+```{r N_diagn}
+# basic model
+model <- glmmTMB(N_total ~ landuse + (1|location),
+                 family= Gamma(link="log"), 
+                 data = soilprop) 
+
+simres <- simulateResiduals(fittedModel = model, plot = F)
+plot(simres) # looks great
+```
+
+### P - gamma - bit underdispersed but OK
+
+```{r P_diagn}
+# basic model
+model <- glmmTMB(P_total ~ landuse + (1|location),
+                 family= Gamma(link="log"), 
+                 data = soilprop) 
+
+simres <- simulateResiduals(fittedModel = model, plot = F)
+plot(simres) #  bit of a dip in QQplot with less than expected residuals with high values, slightly underdispersed, and slightly unequal variance, but the latter no problem
+# how to do something about underdispersion? 
+testDispersion(simres)
+```
+
+## Model bootstrapping
+
+```{r bootstrapping}
+# list for bootstrap values to be saved
+bblist <- list()
+
+# perform parametric bootstrapping for all properties
+# could have looped it, but preferred to do it manually to have more control
+df <- soilprop_long %>%
+  filter(property == "P_total") %>%
+  filter(!is.na(value))
+
+
+fitted_model <- glmmTMB(value ~ landuse + (1|location),
+                        family = Gamma(link="log"),
+                        data = df)
+# fitted_model <- glmmTMB(value ~ landuse + (1|location),
+#                 family = Gamma(link="log"),
+#                 dispformula = ~landuse, # for pH let dispersion vary with land use type
+#                 data = df)
+
+
+plan(multisession, workers = parallel::detectCores() - 1)
+
+
+bb <- bootMer(fitted_model,
+              FUN = function(x) {
+                ff <- fixef(x)[["cond"]] 
+                ff 
+              },
+              nsim = 5000,
+              parallel = "future",
+              ncpus = parallel::detectCores() - 1)
+
+
+bblist[["P_total"]] <- bb 
+
+
+# check bootstrap values - all histograms look kind of fine!
+
+for(g in names(bblist)){
+  bb_t <- as.data.frame(bblist[[g]]$t) %>%
+    pivot_longer(cols = everything())
+  
+    for(n in unique(bb_t$name)){
+      # overall histograms
+      print(bb_t %>% 
+              filter(name == n) %>%
+              ggplot(aes(x = value)) +
+                geom_histogram() +
+                labs(title = paste0(g, "_", n)))
+      # histograms without outliers (using trim function)
+      print(bb_t %>%
+              filter(name == n) %>%
+              trim(value) %>%
+              ggplot(aes(x = value)) +
+                geom_histogram() +
+                labs(title = paste0(g, "_", n, "_trimmed")))
+  }
+}  
+
+
+# save bootstrap values
+saveRDS(bblist, "bblist_soilprop.rds")
+```
+
+## Model results
+
+Here, we generate the model outputs for the soil properties.
+We will only really include the figure in the supplement and then add some R² values in the caption thereof or on the figure panels.
+
+```{r model_output}
+
+# read in bootstrap values
+bblist <- readRDS("bblist_soilprop.rds")
+
+# list for plots
+soilpropplots <- list()
+
+# df for ratios and their 95%CI - for now not using this for the soil properties (could later on do it)
+soilpropratios <- data.frame()
+
+# df for model summary - producing this for these models as well, to be put in caption
+modeloutput_soilprop <- data.frame()
+
+# y axis titles
+titles <- data.frame(property = c("bulkdensity", "pH_KCl", 
+                                  "C_total", "N_total", "P_total"),
+                     title = c("Bulk density (g/cm³)", "pH-KCl", 
+                               "Total C (%)", "Total N (%)", "Total P (mg/kg dry soil)"))
+
+# looping 
+for(g in c("bulkdensity", "pH_KCl", "C_total", "N_total", "P_total")){  
+  
+  # model
+  df <- soilprop_long %>%
+    # remove NA values
+    filter(property == g & !is.na(value))
+    
+  
+  ifelse(g != "pH_KCl", # for pH let dispersion vary with land use type
+         fitted_model <- glmmTMB(value ~ landuse + (1|location),
+                          family = Gamma(link="log"), 
+                          data = df),
+         fitted_model <- glmmTMB(value ~ landuse + (1|location),
+                          family = Gamma(link="log"),
+                          dispformula = ~landuse,
+                          data = df))
+  
+  ## "extra dispersion" attributable to random effects 
+  ## (for bias-adjustment when back-transforming)
+  extra_disp <- sqrt(sum(insight::get_variance(fitted_model)[["var.intercept"]]))
+  
+  # put model summary into dataframe
+  reptable <- as.data.frame(report_table(fitted_model)) # this gives the Nakagawa-R²s, as you would obtain them using performance::r2()
+  if(g != "pH_KCl"){ # do this manually
+  modeloutput <- data.frame(soilproperty = g,
+                      dispersion = reptable %>% 
+                        filter(Component == "dispersion") %>% 
+                        pull(Coefficient),
+                      RE_variance = reptable %>%
+                        filter(Effects == "random") %>%
+                        pull(Coefficient),
+                      R2marg = reptable %>%
+                        filter(Parameter == "R2 (marginal)") %>%
+                        pull(Fit),
+                      R2cond = reptable %>%
+                        filter(Parameter == "R2 (conditional)") %>%
+                        pull(Fit),
+                      sigma = reptable %>%
+                        filter(Parameter == "Sigma") %>%
+                        pull(Fit)) %>%
+      mutate(R2cond_R2marg = R2cond - R2marg)
+  modeloutput_soilprop <- rbind(modeloutput_soilprop, modeloutput)
+  }
+  
+  # process bootstrap values 
+  # to obtain 95%CIs of means and ratios in response scale and p-values
+  bb <- bblist[[g]]
+  
+  ## make dataframe from bootstrap estimates, with landuse means and differences in log scale
+  bb_df_log <- as.data.frame(bb[["t"]]) %>%
+    # rename columns
+    rename("Food_forest_mean" = "(Intercept)") %>%
+    rename_with(.fn = ~ gsub("landuse", "diff_",.x), starts_with("landuse")) %>% 
+    # add column with means of reference landuses, by adding their estimated difference to the estimated mean of the food forest
+    mutate(Forest_mean = Food_forest_mean + diff_Forest,
+           Grassland_mean = Food_forest_mean + diff_Grassland,
+           Arable_field_mean = Food_forest_mean + diff_Arable_field,
+           .after = "Food_forest_mean")
+
+  ## make dataframe with landuse means in response scale, and take FF/ref ratio from those
+  bb_df_response <- bb_df_log %>%
+    select(ends_with("mean")) %>%
+    # back-transform with bias adjustment for RE variance
+    mutate(across(everything(), ~ exp(.) + 0.5*exp(.)*extra_disp^2)) %>%
+    # compute ratio from these bootstrap values for the estimated means in the response scale
+    mutate(ratio_Forest = Food_forest_mean/Forest_mean,
+           ratio_Grassland = Food_forest_mean/Grassland_mean,
+           ratio_Arable_field = Food_forest_mean/Arable_field_mean)
+  
+  ## obtain CIs for model estimated means for plotting
+  ## we plot the model estimated mean and make the CI around this by using the SD obtained from the parametric bootstrapping 
+  
+  mean_boot_sd <- bb_df_response %>%
+    select(ends_with("mean")) %>%
+    pivot_longer(names_to = "landuse", names_pattern = "(.*)_mean",
+                 cols = ends_with("mean")) %>%
+    group_by(landuse) %>%
+    reframe(boot_sd = sd(value))
+  
+  estimates_response <- data.frame(model_estimate = fixef(fitted_model)[["cond"]]) %>% 
+    rownames_to_column(var = "landuse") %>%
+    # change landuse names
+    mutate(landuse = case_when(landuse == "(Intercept)" ~ "Food_forest",
+                             .default = str_remove(landuse, "^landuse"))) %>%
+    # compute actual means for reference land uses (i.e. subtract from food forest mean)
+    mutate(model_mean = ifelse(landuse != "Food_forest", 
+                             model_estimate[landuse == "Food_forest"] + model_estimate,
+                             model_estimate)) %>%
+    # back-transform to response scale, with bias adjustment
+    mutate(across(where(is.numeric), ~ exp(.) + 0.5*exp(.)*extra_disp^2)) %>%
+    # join with sd values
+    left_join(mean_boot_sd) %>%
+    # add CI limits
+    mutate(lower.CL = model_mean - 1.96*boot_sd,
+           upper.CL = model_mean + 1.96*boot_sd) %>%
+    # format for ggplot_the_response
+    select(landuse, model_mean, lower.CL, upper.CL) %>%
+    rename(response = model_mean)
+    
+  
+  ## obtain CIs for ratios - both by using sd from parametric bootstrapping and by using Wald CIs
+  ratio_boot_sd <- bb_df_response %>%
+    select(starts_with("ratio")) %>%
+    pivot_longer(cols = starts_with("ratio"),
+                 names_to = "landuse", 
+                 names_pattern = "ratio_(.*)")%>%
+    group_by(landuse) %>%
+    reframe(boot_sd = sd(value))
+  
+  ratio_Wald_interval <- confint(contrast(emmeans(fitted_model, ~landuse), 
+                                          "trt.vs.ctrl", reverse = TRUE, type = "response"))
+  
+  CI_ratio_response <- estimates_response %>%
+    select(landuse, response) %>%
+    mutate(ratio = response[landuse == "Food_forest"]/response) %>%
+    left_join(ratio_boot_sd) %>%
+    filter(!landuse == "Food_forest") %>%
+    mutate(lower.CL_boot = ratio - 1.96*boot_sd,
+           upper.CL_boot = ratio + 1.96*boot_sd) %>%
+    # add CI limits from asymptotic Wald intervals
+    mutate(lower.CL_Wald = ratio_Wald_interval[,"asymp.LCL"],
+           upper.CL_Wald = ratio_Wald_interval[,"asymp.UCL"])
+    
+  ## obtain two-tailed p-values, 
+  boot_pval <- function(x) { 2*min(mean(x<0), mean(x>0)) } 
+  boot_contrasts <- data.frame(p_raw = apply(bb$t[, colnames(bb$t) != "(Intercept)"], 
+                                             2, boot_pval)) %>%
+    # adjust p-values for multiple comparisons using Holm's method (FWER) 
+    mutate(p_adj_Holm = p.adjust(p_raw, method = "holm"))  %>% 
+    # already format to supply to ggplot_the_response
+    # adding column contrast
+    rownames_to_column(var = "contrast") %>%
+    mutate(contrast = paste0(str_remove(contrast, "^landuse"), " - Food_forest")) %>%
+    rename(p.value = p_adj_Holm)
+
+  ## conditional y axis title
+  title_y <- titles %>% filter(property == g) %>% pull(title)
+  
+  ## plotting
+  p <- ggplot_the_response(
+    fit = fitted_model,
+    fit_emm = estimates_response, 
+    fit_pairs = boot_contrasts, 
+        dots = "sina1",
+      contrast_rows = "all",
+      palette = pal_okabe_ito_FF,
+      y_label = title_y,
+      g_label = "none"
+    ) + 
+      theme(axis.text.x = element_blank(),
+            axis.title.y = element_text(size = 18),
+            axis.text.y = element_text(size = 15),
+            axis.ticks.x = element_blank()) +   
+    expand_limits(y = 0) +
+    # make sure y-axis labels are always with 2 digits, except for pH and Total P (was how I would've done it based on data)
+    # but in plots 1 digit is enough 
+    scale_y_continuous(labels = ifelse(g == "P_total", function(x) sprintf("%.0f", x),
+                                                function(x) sprintf("%.1f", x))) +
+                         # make y axis start at zero
+                         # expand = expansion(mult = c(0, .05), add = 0)) +
+                         # expand = c(0, 0),
+                         # limits = c(0, NA)) + # none of this (combined or not) does the trick.. -> manually
+    theme(axis.text.x = element_blank())
+  
+  # add dashed horizontal line at y = 0, in a way that puts line below other layers
+    # p <- p - geom_hline(yintercept = 0, linetype = "dashed", colour = "darkgrey")
+  
+  # add plot to list
+  soilpropplots[[g]] <- p
+    
+  # format ratios for table output
+  CI_ratio_response <- CI_ratio_response %>%
+    mutate(property = g,
+           ratio_CI_boot = paste0(round(ratio, digits = 2),
+                               " [", 
+                               round(lower.CL_boot, digits = 2),
+                               ", ", 
+                               round(upper.CL_boot, digits = 2),
+                               "]"),
+           ratio_CI_Wald = paste0(round(ratio, digits = 2),
+                               " [", 
+                               round(lower.CL_Wald, digits = 2),
+                               ", ", 
+                               round(upper.CL_Wald, digits = 2),
+                               "]")) %>%
+    select(property, landuse, ratio_CI_boot, ratio_CI_Wald) %>%
+    pivot_longer(cols = c(ratio_CI_boot, ratio_CI_Wald),
+                 values_to = "ratio_CI",
+                 names_to = "method",
+                 names_pattern = ".*_(.*)") %>%
+      pivot_wider(names_from = landuse,
+                values_from = ratio_CI) %>%
+    rename_with(.cols = -c(property, method),
+                .fn = ~paste0("Food forest/", .))
+  
+  # put in dataframe
+  soilpropratios <- rbind(soilpropratios, CI_ratio_response)
+    
+}
+
+# combine all plots into one
+# (densplot <- do.call("grid.arrange", c(densityplots, ncol = 3)))
+
+# design <- # for some reason this doesn't work
+# "AB#
+# CDE"
+# emptyPlot <- ggplot() + theme_void()
+# soilpropplots <- append(soilpropplots, emptyPlot, after = 2) # also didn't work
+# soilplot <- wrap_plots(soilpropplots, design = design) #  didn't work
+soilplot <- soilpropplots[["bulkdensity"]] + soilpropplots[["pH_KCl"]] + plot_spacer() + soilpropplots[["C_total"]] + soilpropplots[["N_total"]] + soilpropplots[["P_total"]]
+
+
+ggsave("soilpropplots.png", soilplot, width = 360, height = 280, unit="mm", dpi=600)
+ggsave("soilpropplots.svg", soilplot, width = 360, height = 280, unit="mm", dpi=600)
+# # ggsave("soil_legend.svg", soilplots$bulkdensity + theme(legend.position = "bottom"), width = 100, height = 100, unit="mm", dpi=600)
+# 
+# produce complete table with ratios and their CIs
+write.csv(soilpropratios, "ratios_soilprop.csv")
+
+# produce complete table with information on models (for supplement)
+mutate(modeloutput_soilprop, across(where(is.numeric), round, 2)) %>%
+  write.csv("modeloutput_soilprop.csv")
+```

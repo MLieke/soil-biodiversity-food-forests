@@ -1,0 +1,268 @@
+---
+title: "H3,H4a.Prep_communitycomposition"
+output: html_document
+---
+
+```{r packages}
+library(tidyverse)
+library(vegan)
+```
+
+```{r functions}
+source("0b.functions.R")
+```
+
+# Additional data
+
+```{r additional_data}
+codes_info <- read.csv("Data/codes_info.csv")
+sites_info <- codes_info %>%
+  select(site, location, landuse) %>%
+  distinct()
+
+grouporder <- c("bacteria", "fungi", "protists", 
+                "nematodes", 
+                "springtails", "mites", "microarthropods",
+                "isopods", "millipedes","centipedes", 
+                "harvestmen", "carabids", "macroarthropods",
+                "earthworms")
+
+macrofauna_specieslist <- read.csv("Data/macrofauna_specieslist.csv")
+```
+
+## Non-sequencing data  
+
+The non-sequencing species data, which is the data of the macrofauna, is processed here.
+First, we complete the data with zeroes for organism groups that were sampled in a given trap in a given session, but were not present in the sample.
+
+```{r data_nonseq}
+# read in raw dataframes of macroarthropods
+isopods <- read.csv("Data/Isopods.csv") %>%
+  as.data.frame() %>%
+  # change from all caps to normal
+  mutate(species = str_to_title(species))
+
+centipedes <- read.csv("Data/Centipedes.csv") %>%
+  as.data.frame()
+
+millipedes <- read.csv("Data/Millipedes.csv") %>%
+  as.data.frame()
+
+harvestmen <- read.csv("Data/Harvestmen.csv") %>%
+  select(!c(Stage, Sex)) %>%
+  as.data.frame() %>%
+  # change from all caps to normal
+  mutate(species = str_to_title(species))
+
+carabids <- read.csv("Data/Carabids.csv") %>%
+  as.data.frame() 
+
+# put dataframes in list
+dflist <- list("isopods" = isopods,
+               "centipedes" = centipedes,
+               "millipedes" = millipedes,
+               "harvestmen" = harvestmen,
+               "carabids" = carabids)
+
+# read in list of pitfall traps that were sampled 
+# compare with this list --> if given sample from this list not present in dataframe of a species group, it means that there were 0 individuals of this group in this sample vs. certain samples got lost and should not be attributed value 0
+sampled <- read.csv("Data/pitfall_sampled.csv")
+
+# complete dataframes and give code to be put as rowname later on
+for(i in 1:length(dflist)) {
+  dflist[[i]] <- dflist[[i]] %>%
+    # sum "abundances" (activity-density) of same species in same trap
+    group_by(site, session, location, landuse, trap, species) %>% 
+    reframe(abundance = sum(abundance)) %>%
+    ungroup() %>% 
+    # right_join with list of sampled "samples" to obtain NA values for study sites that were sampled but did not contain any individuals of this species group
+    right_join(sampled) %>%
+    # complete with species, so that there is abundance 0 for each species without individuals in this sample (important for species-abundance matrix later on) (would also happen automatically when using pivot_wider)
+    complete(nesting(session, site, location, landuse, trap), species) %>%
+    # remove "NA" species, no longer necessary (were the result of adding the "empty samples")
+    filter(!is.na(species)) %>%
+    # abundance NA to 0
+    mutate(abundance = replace_na(abundance, 0)) %>%
+    # give code to be used as rowname later on
+    mutate(code = paste0(session, site, trap))
+}
+    
+earthworms <- read.csv("Data/Earthworms.csv") %>%
+  select(!biomass) %>%
+  # for diversity, we don't take juveniles and 'heads' into account (for abundance we do)
+  # by doing so, we go from 143 study sites to 136, 7 samples did not contain adults
+  filter(!(species %in% c("head", "broken", "juvenile_nopigment", "juvenile_pigment"))) %>%
+  # no completion with empty samples needed here, dataframe already contains rows with "empty" for samples that were sampled but did not contain any earthworms
+  # complete with species, so that there is abundance 0 for each species without individuals in this sample (important for species-abundance matrix later on)
+  complete(nesting(code, site, location, landuse), species) %>%
+  replace(is.na(.), 0) %>%
+  # remove "empty" rows, not longer needed now that dataframe is completed with 0's for all species
+  filter(!(species == "empty"))
+
+# add earthworms to dflist
+dflist <- append(dflist, 
+                 list("earthworms" = as.data.frame(earthworms)))
+
+# in all dataframes: convert landuse, session and trap to factor
+for(g in names(dflist)) {
+  dflist[[g]] <- dflist[[g]] %>%
+    mutate(landuse = factor(landuse, levels = c("Food_forest",
+                                                "Forest",
+                                                "Grassland",
+                                                "Arable_field"))) %>%
+    # also make a factor out of session and trap if these columns exist in the dataframe
+    {if("session" %in% colnames(dflist[[g]])) mutate(., session = factor(session)) else .} %>%
+    {if("trap" %in% colnames(dflist[[g]])) mutate(., trap = factor(trap)) else .}
+}
+```
+
+Here, the macrofauna data is transformed into species-abundance matrices.
+
+```{r specab_nonseq}
+specablist <- list()
+
+# for isopods, millipedes, centipedes and carabids: averaging species counts of the three first sessions per trap; for harvestmen: averaging species counts of all four sessions per trap
+# also already create additional species-abundance matrix for all macroarthropods pooled together
+specablist[["macroarthropods"]] <- data.frame(code = paste0(sampled$site, sampled$trap)) %>% distinct()
+
+for(g in c("isopods", "centipedes", "millipedes", "carabids", "harvestmen")) {
+  specablist[[g]] <- dflist[[g]] %>% 
+    # exclude session 4 in case not harvestmen
+    {if(g != "harvestmen") filter(., session != 4) else .} %>%
+    # make species-abundance matrix
+    pivot_wider(names_from = species,
+                values_from = abundance) %>%
+    # average across sessions per trap
+    group_by(site, trap) %>%
+    summarise(across(where(is.numeric), mean)) %>%
+    ungroup() %>%
+    # give code and remove extra columns
+    mutate(code = paste0(site, trap)) %>%
+    select(!c(site, trap)) 
+  
+  specablist[["macroarthropods"]] <- left_join(specablist[["macroarthropods"]],
+                                               specablist[[g]], 
+                                               by = "code")
+  
+  # for community composition analyses (PERMANOVA, NMDS, beta-diversity),
+  # we remove empty communities, and also all communities that have less than 5 individuals
+  specablist[[g]] <- specablist[[g]] %>%
+    column_to_rownames(var = "code") %>%
+    # keep only those rows where the total sum of individuals is >= 5
+    filter(rowSums(across(where(is.numeric))) >= (5/3)) # /3 because we averaged across 3 sessions
+
+  
+}
+
+# for community composition analyses (PERMANOVA, NMDS, beta-diversity), 
+# we remove empty communities, and also all communities that have less than 5 individuals
+specablist[["macroarthropods"]] <- specablist[["macroarthropods"]] %>%
+  column_to_rownames(var = "code") %>%
+  # keep only those rows where the total sum of individuals is >= 5
+  filter(rowSums(across(where(is.numeric))) >= (5/3)) 
+  
+# for earthworms
+specablist[["earthworms"]] <- dflist[["earthworms"]] %>%
+      select(c(code, species, abundance)) %>%
+      pivot_wider(names_from = species,
+                values_from = abundance) %>%
+      column_to_rownames(var = "code") %>%
+      # keep only those rows where the total sum of individuals is >= 5
+      filter(rowSums(across(where(is.numeric))) >= 5)  
+```
+
+Here, we additionally pool the two traps or three plots per site, to be used for the stacked bars that show the average proportion of different taxonomic groups at the site level. We additionally provide extra taxonomic information (genus, family, order, class).
+
+```{r taxon_nonseq}
+
+# macroarthropods
+
+taxon_macroarthropods  <- dflist[["isopods"]] %>%
+  mutate(group = "isopods") %>%
+  rbind(dflist[["centipedes"]] %>% mutate(group = "centipedes")) %>%
+  rbind(dflist[["millipedes"]] %>% mutate(group = "millipedes")) %>%
+  rbind(dflist[["carabids"]] %>% mutate(group = "carabids")) %>%
+  # for all of these groups filter out session 4
+  filter(session != 4) %>%
+  # add harvestmen data, for which we use all four sessions
+  rbind(dflist[["harvestmen"]] %>% mutate(group = "harvestmen")) %>%
+  # calculate average number of individuals per site, averaged across traps and sessions
+  group_by(site, group, species) %>%
+  reframe(mean_quant = mean(abundance)) %>%
+  # add taxonomic information
+  left_join(macrofauna_specieslist)
+
+saveRDS(taxon_macroarthropods, "taxon_macroarthropods.rds")
+
+# earthworms
+
+taxon_earthworms <- dflist[["earthworms"]] %>%
+  # only keep those communities that consist of at least five individuals (as used for NMDS and PERMANOVA and beta-diversity)
+  group_by(code) %>%
+  mutate(total_plot_count = sum(abundance)) %>%
+  filter(total_plot_count >= 5) %>%
+  # calculate mean quantity of each species at the site level
+  group_by(site, species) %>%
+  reframe(mean_quant = mean(abundance)) %>%
+  left_join(macrofauna_specieslist)
+
+saveRDS(taxon_earthworms, "taxon_earthworms.rds")
+```
+
+## Dissimilarity matrices
+
+Here we read in the Bray-Curtis dissimilarity matrix for the sequencing data computed on the server (values are the average from 100 dissimilarities, each computed after a random subsample of given read depth was taken from the libraries of the two plots being compared) and produce the Bray-Curtis dissimilarity matrix for the non-sequencing data.
+
+```{r dm_list}
+dmlist <- list() # list of dissimilarity matrices for different species groups
+```
+
+```{r dissim_matrix_seq}
+dmlist[["bacteria"]] <- readRDS("Data/B16S_dist.rds")
+dmlist[["fungi"]] <- readRDS("Data/ITS_dist.rds")
+dmlist[["protists"]] <- readRDS("Data/P18S_dist_800.rds")
+dmlist[["nematodes"]] <- readRDS("Data/N18S_dist.rds")
+dmlist[["springtails"]] <- readRDS("Data/COI_col_dist.rds")
+# for mites, immediately filter out outlier VB139 here
+matrix_mites <- as.matrix(readRDS("Data/COI_mite_dist.rds"))
+# filter out outlier
+dmlist[["mites"]] <- as.dist(matrix_mites[!rownames(matrix_mites) == "VB139",
+                                           !colnames(matrix_mites) == "VB139"])
+dmlist[["microarthropods"]] <- readRDS("Data/COI_ma_dist_1000.rds")
+```
+
+```{r dissim_matrix_nonseq}
+for(g in names(specablist)){
+  dmlist[[g]] <- vegdist(specablist[[g]], method = "bray")
+}
+
+dmlist <- dmlist[grouporder]
+
+saveRDS(dmlist, "dmlist.rds")
+```
+
+## Compute average pairwise dissimilarity per study site (for beta-diversity)
+
+```{r avgdissim_within}
+avgdissimlist <- list()
+# per species group
+for(g in names(dmlist)){
+  df <- dmlist[[g]]
+  avgdissimlist[[g]] <- data.frame()
+   # the below creates a dataframe that links codes (that are rownames in the dissimilarity matrix) to sites, so that we can do grouping per site
+  rn <- data.frame(code = rownames(as.matrix(df))) %>%
+    left_join(codes_info %>% select(code, site))
+
+  avg_pairwise_dm <- meandist(df, grouping = rn$site) # diagonal is within-site mean dissim
+
+  output <- data.frame(site = names(diag(avg_pairwise_dm)),
+                      avg_pairwise_dissim = diag(avg_pairwise_dm)) %>%
+    left_join(codes_info %>% select(site, location, landuse) %>% distinct()) %>%
+    # remove NA-rows
+    filter(!is.na(avg_pairwise_dissim))
+
+  avgdissimlist[[g]] <- rbind(avgdissimlist[[g]], output)
+}
+
+saveRDS(avgdissimlist, "avgdissimlist.rds")
+```

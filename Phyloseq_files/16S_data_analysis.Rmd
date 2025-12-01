@@ -1,0 +1,151 @@
+---
+title: "16S_data_analysis"
+output: html_document
+date: "2024-04-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(phyloseq)
+library(metagenomeSeq)
+library(metagMisc)
+library(vegan)
+library(iNEXT)
+library(ggforce)
+library(ggrepel)
+```
+
+```{r data}
+ps <- readRDS("ps_16S_genus.rds")
+```
+
+``` {r get bacteria}
+ps_bact <- subset_taxa(ps, Kingdom == "Bacteria")
+sum(rowSums(otu_table(ps_bact)) < 10000)
+# rowSums(otu_table(ps_bact))
+rownames(otu_table(ps_bact))[rowSums(otu_table(ps_bact)) < 10000]
+# rank_names(ps_bact)
+ps_bact_2 <- prune_samples(sample_sums(ps_bact) > 10000, ps_bact)
+"Chloroplast" %in% get_taxa_unique(ps_bact_2, "Class") #FALSE
+"Mitochondria" %in% get_taxa_unique(ps_bact_2, "Family") #TRUE
+# ps_bact_2 %>% subset_taxa(Family== "Mitochondria")
+ps_bact_3 <- ps_bact_2 %>% subset_taxa(Family!= "Mitochondria" | is.na(Family))
+max(sample_sums(ps_bact_3))
+min(taxa_sums(ps_bact_3))
+ps_bact_3 <- prune_taxa(taxa_sums(ps_bact_3) > 0, ps_bact_3)
+# saveRDS(ps_bact_3, "ps_bacteria.RDS")
+```
+
+```{r matrix}
+recoding <- read.csv2("dna_code_16S_site.csv")
+recoding$i5_code <- paste0("i5.",recoding$dna_code)
+ASV <- as(otu_table(ps_bact_3), "matrix")
+# transpose if necessary
+if(taxa_are_rows(ps_bact_3)){ASV <- t(ASV)}
+# Coerce to data.frame
+ASVdf = as.data.frame(ASV)
+ASV_string <- paste0("ASV", seq(ntaxa(ps_bact_3)))
+colnames(ASVdf) <- ASV_string
+ASVdf$i5_code <- rownames(ASVdf)
+ASVdf <- ASVdf %>% left_join(recoding[,c("i5_code", "code")], by="i5_code")
+rownames(ASVdf) <- ASVdf$code
+ASVdf <- ASVdf %>% select(-c(i5_code, code))
+# write.csv(ASVdf, "16S_P2.csv")
+B16S_dist <- avgdist(ASVdf, sample=min(sample_sums(ps_bact_3)), iterations=50)
+saveRDS(B16S_dist, "B16S_dist.rds")
+```
+
+```{r depth cutoff}
+#check read depth
+read_abund <- data.frame(abund = rowSums(otu_table(ps_bact)))
+read_abund$i5_code <- rownames(read_abund)
+read_abund <- read_abund %>% separate(i5_code, c("i5","dna_code"))
+read_abund$dna_code <- as.numeric(read_abund$dna_code)
+read_abund <- read_abund %>% left_join(recoding[,c("dna_code", "code","landuse")], by="dna_code")
+read_abund %>% ggplot(aes(x=1, y=abund, label=code)) +
+  geom_jitter(position = position_jitter(seed = 1)) + ggrepel::geom_text_repel(position = position_jitter(seed = 1))
+
+#only sample VB104 lower than 10000 reads per sample 
+
+read_abund %>% arrange(abund) %>% 
+  ggplot(aes(x=1:nrow(.),y=abund)) + geom_line()
+
+read_abund %>% arrange(abund) %>% print(n=30)
+```
+
+```{r reads vs asv richness}
+sample_reads <- sample_sums(otu_table(ps_bact_3))
+
+# Extract sample-wise counts of ASVs
+sample_asvs <- sample_sums(otu_table(ps_bact_3) > 0)
+
+plot(sample_reads, sample_asvs,
+     xlab = "Number of Reads",
+     ylab = "Number of ASVs",
+     main = "Number of Reads vs Number of ASVs per Sample")
+
+# Add regression line
+abline(lm(sample_asvs ~ sample_reads))
+
+# Calculate R-squared and p-value
+fit<-lm(sample_asvs~sample_reads)
+rsquared <- summary(fit)$r.squared
+p_value <- summary(fit)$coefficients[2, 4]
+
+# Add R-squared and p-value to the plot
+text(x = max(sample_reads) * 0.7, y = max(sample_asvs) * 0.8,
+     labels = paste("R² =", round(rsquared, 2), "\np =", signif(p_value, digits = 3)),
+     adj = c(-1, 0))
+```
+
+``` {r iNEXT}
+min(sample_sums(ps_bact_3))
+site_info <- read_csv2("dna_code_16S_site.csv")
+
+#estimateD on plot based data
+iNEXT_input_table <- otu_table(ps_bact_3) %>%
+  t() %>%
+  data.frame()
+set.seed(183494)
+Hill_plot_1 <- estimateD(iNEXT_input_table, q = 1, 
+                           datatype = "abundance",
+                          base = "size", min(sample_sums(ps_bact_3)))
+Hill_plot_1 <- Hill_plot_1 %>% separate(Assemblage, c("i5", "dna_code"))
+Hill_plot_1$dna_code <- as.numeric(Hill_plot_1$dna_code)
+Hill_plot_1 <- left_join(Hill_plot_1, site_info[,c("dna_code","unique_site","landuse", "location", "texture")], by= "dna_code")
+write.csv(Hill_plot_1, file="Hill_1_16S.csv")
+# inext_out <- iNEXT(iNEXT_input_table_16S, q = 1, datatype = "abundance")
+
+# q=0 for supplement
+Hill_plot_0 <- estimateD(iNEXT_input_table, q=0,
+                         datatype="abundance",
+                         base="size", min(sample_sums(ps_bact_3)))
+Hill_plot_0 <- Hill_plot_0 %>% separate(Assemblage, c("i5", "dna_code"))
+Hill_plot_0$dna_code <- as.numeric(Hill_plot_0$dna_code)
+Hill_plot_0 <- left_join(Hill_plot_0, site_info[,c("dna_code","unique_site","landuse", "location", "texture")], by= "dna_code")
+write.csv(Hill_plot_0, file="Hill_0_16S.csv")
+
+# q=1 for supplement
+Hill_plot_2 <- estimateD(iNEXT_input_table, q=2,
+                         datatype="abundance",
+                         base="size", min(sample_sums(ps_bact_3)))
+Hill_plot_2 <- Hill_plot_2 %>% separate(Assemblage, c("i5", "dna_code"))
+Hill_plot_2$dna_code <- as.numeric(Hill_plot_2$dna_code)
+Hill_plot_2 <- left_join(Hill_plot_2, site_info[,c("dna_code","unique_site","landuse", "location", "texture")], by= "dna_code")
+write.csv(Hill_plot_2, file="Hill_2_16S.csv")
+```
+
+```{r rarefaction}
+vb_colors <- c( "#F0E442","#56B4E9","#D55E00", "#009E73")
+
+r <- ggrare(ps_bact_3, step = 100, color = "landuse", se=FALSE)
+r <- r + scale_color_manual(values=vb_colors) +
+  # coord_cartesian(xlim = c(0,30000)) + 
+  geom_vline(xintercept=13029) + xlab("Sample read depth")
+r
+saveRDS(r, "rarefaction_bacteria.RDS")
+```

@@ -1,0 +1,271 @@
+---
+title: "Model_results_densities"
+author: "Lieke"
+date: "2024-11-25"
+output: html_document
+---
+
+```{r packages}
+# general
+library(tidyverse)
+# models
+library(lmerTest)
+library(glmmTMB)
+library(emmeans)
+# visualisation
+library(ggplot2)
+library(ggforce)
+library(flextable)
+library(gridExtra)
+library(patchwork)
+library(report)
+```
+
+```{r functions}
+source("0b.functions.R")
+```
+
+```{r data}
+densitylist <- readRDS("H1.densitylist.rds")
+grouporder <- c("bacteria", "fungi", "AMF", 
+                "nematodes", "springtails", "mites",
+                "isopods", "millipedes", "centipedes",
+                "harvestmen", "carabids", "earthworms")
+densitylist <- densitylist[grouporder]
+
+bblist_dens <- readRDS("bblist_dens.rds") # read in list with bootstrap values for model estimates
+```
+
+
+# Models and output
+In this file, only the output and visualisation of the models (plotted are the model estimated means and their 95% bootstrap CI, back-transformed to the response scale with a bias adjustment) are produced.
+We also create a table with the unstandardised effect sizes, i.e. the ratio of the mean of the food forest group on the mean of the reference land use types, and the 95%CI thereof.
+
+```{r model_output}
+# list for plots
+densityplots <- list()
+
+# df for ratios and their 95%CI
+densityratios <- data.frame()
+
+# df for model summary
+modeloutput_dens <- data.frame()
+
+for(m in names(densitylist)){
+  
+  # model
+  df <- densitylist[[m]] %>%
+    # remove NA values
+    filter(!if_any(everything(), is.na))
+  
+  ifelse(m %in% c("isopods", "millipedes", "centipedes", 
+                  "harvestmen", "carabids", "earthworms"),
+         fitted_model <- glmmTMB(abundance ~ landuse + (1|location),
+                   family = tweedie, # if there are zeroes in df: macrofauna
+                   data = df),
+            ifelse(m == "springtails",
+                   fitted_model <- glmmTMB(abundance ~ landuse,
+                                          family = Gamma(link="log"),
+                                          data = df), # RE variance here too low (estimated means identical to model with RE)
+               ifelse("abundance" %in% colnames(df),
+                      fitted_model <- glmmTMB(abundance ~ landuse + (1|location),
+                         family = Gamma(link="log"),  # micro- and mesofauna
+                         data = df),
+                      fitted_model <- glmmTMB(biomass ~ landuse + (1|location),
+                         family = Gamma(link="log"),  # microorganisms
+                         data = df))))
+  
+  ## "extra dispersion" attributable to random effects 
+  ## (for bias-adjustment when back-transforming)
+  extra_disp <- if(m != "springtails") {sqrt(sum(insight::get_variance(fitted_model)[["var.intercept"]]))} else 0
+  
+  # put model summary into dataframe
+  reptable <- as.data.frame(report_table(fitted_model)) # this gives the Nakagawa-R²s
+  if(m != "springtails"){ # for springtails did it separately, manually, was quicker here
+  modeloutput <- data.frame(group = m,
+                      dispersion = reptable %>% 
+                        filter(Component == "dispersion") %>% 
+                        pull(Coefficient),
+                      RE_variance = reptable %>%
+                        filter(Effects == "random") %>%
+                        pull(Coefficient),
+                      R2marg = reptable %>%
+                        filter(Parameter == "R2 (marginal)") %>%
+                        pull(Fit),
+                      R2cond = reptable %>%
+                        filter(Parameter == "R2 (conditional)") %>%
+                        pull(Fit),
+                      sigma = reptable %>%
+                        filter(Parameter == "Sigma") %>%
+                        pull(Fit)) %>%
+      mutate(R2cond_R2marg = R2cond - R2marg)
+  modeloutput_dens <- rbind(modeloutput_dens, modeloutput)
+  } 
+    
+    
+  # process bootstrap values 
+  # to obtain 95%CIs of means and ratios in response scale and p-values
+  bb <- bblist_dens[[m]]
+  
+  ## make dataframe from bootstrap estimates, with landuse means and differences in log scale
+  bb_df_log <- as.data.frame(bb[["t"]]) %>%
+    # rename columns
+    rename("Food_forest_mean" = "(Intercept)") %>%
+    rename_with(.fn = ~ gsub("landuse", "diff_",.x), starts_with("landuse")) %>% 
+    # add column with means of reference landuses, by adding their estimated difference to the estimated mean of the food forest
+    mutate(Forest_mean = Food_forest_mean + diff_Forest,
+           Grassland_mean = Food_forest_mean + diff_Grassland,
+           Arable_field_mean = Food_forest_mean + diff_Arable_field,
+           .after = "Food_forest_mean")
+
+  ## make dataframe with landuse means in response scale, and take FF/ref ratio from those 
+  bb_df_response <- bb_df_log %>%
+    select(ends_with("mean")) %>%
+    # back-transform with bias adjustment for RE variance
+    mutate(across(everything(), ~ exp(.) + 0.5*exp(.)*extra_disp^2)) %>%
+    # compute ratio from these bootstrap values for the estimated means in the response scale
+    mutate(ratio_Forest = Food_forest_mean/Forest_mean,
+           ratio_Grassland = Food_forest_mean/Grassland_mean,
+           ratio_Arable_field = Food_forest_mean/Arable_field_mean)
+  
+  ## obtain CIs for model estimated means for plotting
+  ## we plot the model estimated mean and make the CI around this by using the SD obtained from the parametric bootstrapping 
+  
+  mean_boot_sd <- bb_df_response %>%
+    select(ends_with("mean")) %>%
+    pivot_longer(names_to = "landuse", names_pattern = "(.*)_mean",
+                 cols = ends_with("mean")) %>%
+    group_by(landuse) %>%
+    reframe(boot_sd = sd(value))
+  
+  estimates_response <- data.frame(model_estimate = fixef(fitted_model)[["cond"]]) %>% 
+    rownames_to_column(var = "landuse") %>%
+    # change landuse names
+    mutate(landuse = case_when(landuse == "(Intercept)" ~ "Food_forest",
+                             .default = str_remove(landuse, "^landuse"))) %>%
+    # compute actual means for reference land uses (i.e. subtract from food forest mean)
+    mutate(model_mean = ifelse(landuse != "Food_forest", 
+                             model_estimate[landuse == "Food_forest"] + model_estimate,
+                             model_estimate)) %>%
+    # back-transform to response scale, with bias adjustment
+    mutate(across(where(is.numeric), ~ exp(.) + 0.5*exp(.)*extra_disp^2)) %>%
+    # join with sd values
+    left_join(mean_boot_sd) %>%
+    # add CI limits
+    mutate(lower.CL = model_mean - 1.96*boot_sd,
+           upper.CL = model_mean + 1.96*boot_sd) %>%
+    # format for ggplot_the_response
+    select(landuse, model_mean, lower.CL, upper.CL) %>%
+    rename(response = model_mean)
+    
+  
+  ## obtain CIs for ratios - both by using sd from parametric bootstrapping and by using Wald CIs
+  ratio_boot_sd <- bb_df_response %>%
+    select(starts_with("ratio")) %>%
+    pivot_longer(cols = starts_with("ratio"),
+                 names_to = "landuse", 
+                 names_pattern = "ratio_(.*)")%>%
+    group_by(landuse) %>%
+    reframe(boot_sd = sd(value))
+  
+  ratio_Wald_interval <- confint(contrast(emmeans(fitted_model, ~landuse), 
+                                          "trt.vs.ctrl", reverse = TRUE, type = "response"))
+  
+  CI_ratio_response <- estimates_response %>%
+    select(landuse, response) %>%
+    mutate(ratio = response[landuse == "Food_forest"]/response) %>%
+    left_join(ratio_boot_sd) %>%
+    filter(!landuse == "Food_forest") %>%
+    mutate(lower.CL_boot = ratio - 1.96*boot_sd,
+           upper.CL_boot = ratio + 1.96*boot_sd) %>%
+    # add CI limits from asymptotic Wald intervals
+    mutate(lower.CL_Wald = ratio_Wald_interval[,"asymp.LCL"],
+           upper.CL_Wald = ratio_Wald_interval[,"asymp.UCL"])
+    
+  ## obtain two-tailed p-values, 
+  boot_pval <- function(x) { 2*min(mean(x<0), mean(x>0)) } 
+  boot_contrasts <- data.frame(p_raw = apply(bb$t[, colnames(bb$t) != "(Intercept)"], 
+                                             2, boot_pval)) %>%
+    # adjust p-values for multiple comparisons using Holm's method (FWER) 
+    mutate(p_adj_Holm = p.adjust(p_raw, method = "holm"))  %>% 
+    # already format to supply to ggplot_the_response
+    # adding column contrast
+    rownames_to_column(var = "contrast") %>%
+    mutate(contrast = paste0(str_remove(contrast, "^landuse"), " - Food_forest")) %>%
+    rename(p.value = p_adj_Holm)
+
+  ## conditional y axis title
+    title_y <- if(m %in% c("bacteria", "fungi", "AMF")) {
+      "Biomass (µg/g dry soil)"} else if(m == "earthworms"){
+        "Number of individuals per 0.1 m²"} else if(m %in% c("nematodes", 
+                                                             "springtails", "mites")) {
+        "Number of individuals per g dry soil"} else "Average activity-density per session"
+  
+  ## plotting
+  p <- ggplot_the_response(
+    fit = fitted_model,
+    fit_emm = estimates_response, 
+    fit_pairs = boot_contrasts, 
+        dots = "sina1",
+      contrast_rows = "all",
+      palette = pal_okabe_ito_FF,
+      y_label = title_y,
+      g_label = "none"
+    ) + 
+      theme(axis.text.x = element_blank(),
+            axis.title.y = element_text(size = 18),
+            axis.text.y = element_text(size = 15),
+            axis.ticks.x = element_blank()) +     
+    # make sure y-axis labels are always round numbers, except in case of springtails 1 digit
+      scale_y_continuous(labels = if(m == "springtails"){function(x) sprintf("%.1f", x)} 
+                         else function(x) sprintf("%.0f", x)) +
+      theme(axis.text.x = element_blank())
+  
+  # add dashed horizontal line at y = 0, in a way that puts line below other layers
+    p <- p - geom_hline(yintercept = 0, linetype = "dashed", colour = "darkgrey")
+  
+  # add plot to list
+  densityplots[[m]] <- p
+    
+  # format ratios for table output
+  CI_ratio_response <- CI_ratio_response %>%
+    mutate(species_group = m,
+           ratio_CI_boot = paste0(round(ratio, digits = 2),
+                               " [", 
+                               round(lower.CL_boot, digits = 2),
+                               ", ", 
+                               round(upper.CL_boot, digits = 2),
+                               "]"),
+           ratio_CI_Wald = paste0(round(ratio, digits = 2),
+                               " [", 
+                               round(lower.CL_Wald, digits = 2),
+                               ", ", 
+                               round(upper.CL_Wald, digits = 2),
+                               "]")) %>%
+    select(species_group, landuse, ratio_CI_boot, ratio_CI_Wald) %>%
+    pivot_longer(cols = c(ratio_CI_boot, ratio_CI_Wald),
+                 values_to = "ratio_CI",
+                 names_to = "method",
+                 names_pattern = ".*_(.*)") %>%
+      pivot_wider(names_from = landuse,
+                values_from = ratio_CI) %>%
+    rename_with(.cols = -c(species_group, method),
+                .fn = ~paste0("Food forest/", .))
+  
+  # put in dataframe
+  densityratios <- rbind(densityratios, CI_ratio_response)
+    
+}
+
+# combine all plots into one
+densplot <- wrap_plots(densityplots, ncol = 3) 
+ggsave("Figures/H1.densityplots.svg", densplot, width = 360, height = 350, unit="mm", dpi=600)
+ggsave("Figures/H1.densityplots_legend.svg", densityplots$bacteria + theme(legend.position = "bottom"), width = 100, height = 100, unit="mm", dpi=600)
+
+# produce complete table with ratios and their CIs
+write.csv(densityratios, "Output_tables/H1.ratios_dens.csv")
+
+# produce complete table with information on models (for supplement)
+mutate(modeloutput_dens, across(where(is.numeric), round, 2)) %>%
+  write.csv("Output_tables/H1.modeloutput_dens.csv")
+```

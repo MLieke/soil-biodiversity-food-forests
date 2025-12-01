@@ -1,0 +1,67 @@
+---
+title: "Model_diagnostics_abundance_biomass"
+author: "Lieke"
+date: "2024-06-20"
+output: html_document
+---
+
+```{r packages}
+# general
+library(tidyverse)
+# models
+library(lmerTest)
+library(glmmTMB)
+library(emmeans)
+# diagnostics
+library(DHARMa)
+library(broom.mixed)
+# visualisation
+library(ggplot2)
+```
+
+```{r data}
+densitylist <- readRDS("H1.densitylist.rds")
+```
+
+This file contains the code used to perform the model diagnostics for the models for hypothesis 1. 
+
+For bacteria (including Actinobacteria), non-AM fungi ("fungi"), AM fungi ("AMF"), nematodes, springtails and mites, we use a gamma distribution for the data that is continuous and strictly positive (so without zeros). Specifically for springtails, we compared parameter estimates for the models with and without the location random effect term.
+
+For the macrofauna, the isopods, millipedes, centipedes, harvestmen, carabids and earthworms, we use a Tweedie distribution. For the earthworm data, the values are integer counts, but due to overdispersion a model with Poisson distribution was inappropriate, the models with negative binomial and tweedie distribution yielded similar outputs.
+
+```{r diagn}
+df <- densitylist[["bacteria"]] 
+# or [["fungi"]], [["AMF"]], [["nematodes"]], [["springtails"]], [["mites"]]
+# or [["isopods"]], [["millipedes"]], [["centipedes"]], [["harvestmen"]], [["carabids"]], [["earthworms"]]
+
+model <- glmmTMB(biomass ~ landuse + (1|location),
+                 family= Gamma(link="log"), # or tweedie for macrofauna
+                 data = df) 
+simres <- simulateResiduals(fittedModel = model, plot = F)
+plot(simres) 
+summary(model)
+performance::r2(model)
+
+ggplot(df,aes(landuse, biomass))+
+    geom_line(colour="gray",aes(group=location))+
+    geom_point()+
+    scale_colour_brewer(palette="Dark2")
+
+aa <- augment(model, data=df)
+(gg2 <- ggplot(aa, aes(.fitted,.resid))
+    + geom_line(aes(group=location),colour="gray")
+    + geom_point(aes(shape=landuse))
+    + geom_smooth()
+) 
+
+aa$.fitted0 <- predict(model, newdata=transform(df,location=NA),type="response")
+aa$.resid0 <- df$biomass-aa$.fitted0
+(gg3 <- ggplot(aa, aes(.fitted0,.resid0))
+    + geom_line(aes(group=location),colour="gray")
+    + geom_point(aes(shape=landuse))
+    + geom_smooth()
+) 
+lme4:::dotplot.ranef.mer(ranef(model)$cond)
+```
+
+

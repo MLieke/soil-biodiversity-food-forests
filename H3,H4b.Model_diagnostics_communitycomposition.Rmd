@@ -1,0 +1,71 @@
+---
+title: "H3,H4n.Model_diagnostics_communitycomposition"
+output: html_document
+---
+
+```{r packages_etc}
+library(tidyverse)
+library(glmmTMB)
+library(DHARMa)
+library(broom.mixed)
+
+source("0b.functions.R")
+
+landusetypes <- c("Food_forest", "Forest", "Grassland", "Arable_field")
+```
+
+```{r load_dissimlist}
+# transformation according to Smithson and Verkuilen (2006) to fit (0, 1):
+# (y · (n − 1) + 0.5)/n where n is the sample size (total number of observations)
+
+avgdissimlist <- readRDS("avgdissimlist.rds")
+
+for(m in names(avgdissimlist)){
+avgdissimlist[[m]] <- avgdissimlist[[m]] %>%
+      mutate(avgdissim_transf = (avg_pairwise_dissim * (length(avg_pairwise_dissim) - 1)
+                                    + 0.5)/length(avg_pairwise_dissim),
+             landuse = factor(landuse, levels = c("Food_forest", "Forest", 
+                                                "Grassland", "Arable_field"))) %>%
+  ## Removing land use type for which there are less than 6 observations 
+      na.omit() %>%
+      group_by(landuse) %>%
+      filter(n() >= 6) %>%
+      ungroup()}
+```
+
+```{r diagn}
+df <- avgdissimlist[["bacteria"]] 
+# or [["fungi"]], [["nematodes"]], [["microarthropods"]], [["macroarthropods"]],  [["earthworms"]]
+nrow(df)
+
+# model
+model <- glmmTMB(avgdissim_transf ~ landuse,
+                   family = beta_family(),
+                   data = df)
+# diagnostics
+simres <- simulateResiduals(model)
+plot(simres)
+summary(model)
+performance::r2(model)
+
+ggplot(df,aes(landuse,avgdissim_transf))+
+    geom_line(colour="gray",aes(group=location))+
+    geom_point()+
+    scale_colour_brewer(palette="Dark2")
+
+aa <- augment(model, data=df)
+(gg2 <- ggplot(aa, aes(.fitted,.resid))
+    + geom_line(aes(group=location),colour="gray")
+    + geom_point(aes(shape=landuse))
+    + geom_smooth()
+) 
+
+aa$.fitted0 <- predict(model, newdata=transform(df,location=NA),type="response")
+aa$.resid0 <- df$avgdissim_transf-aa$.fitted0
+(gg3 <- ggplot(aa, aes(.fitted0,.resid0))
+    + geom_line(aes(group=location),colour="gray")
+    + geom_point(aes(shape=landuse))
+    + geom_smooth()
+)
+lme4:::dotplot.ranef.mer(ranef(model)$cond)
+```
