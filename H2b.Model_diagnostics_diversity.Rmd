@@ -249,7 +249,7 @@ performance::r2(model.g)
 ```
 
 
-## Protists (18S) - gamma with dipformula=~landuse
+## Protists (18S) - gamma with dispformula=~landuse
 
 ```{r protists_0D}
 df <- diversitylist_D0[["protists_q0"]]

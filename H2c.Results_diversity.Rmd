@@ -39,13 +39,13 @@ names(diversitylist_D0) <- c("isopods","centipedes","millipedes","carabids","har
                              "springtails","mites")
 diversitylist_D0 <- diversitylist_D0[grouporder]
 
-bblist_D0 <- readRDS("bblist_D0.rds")
+bblist_D0 <- readRDS("H2.bblist_D0.rds")
 
 #1D
 diversitylist_D1 <- readRDS("H2.diversitylist_D1.rds")
 diversitylist_D1 <- diversitylist_D1[grouporder]
 
-bblist_D1 <- readRDS("bblist_D1.rds")
+bblist_D1 <- readRDS("H2.bblist_D1.rds")
 ```
 
 # Models and output
@@ -204,7 +204,7 @@ for(m in names(diversitylist_D0)){
         dots = "sina1",
       contrast_rows = "all",
       palette = pal_okabe_ito_FF,
-      y_label = "(Estimated) number of captured species",
+      y_label = "Species/taxon richness",
       g_label = "none"
     ) +
       theme(axis.text.x = element_blank(),
@@ -216,7 +216,7 @@ for(m in names(diversitylist_D0)){
       theme(axis.text.x = element_blank())
 
   # add dashed horizontal line at y = 0, in a way that puts line below other layers
-    p <- p - geom_hline(yintercept = 0, linetype = "dashed", colour = "darkgrey")
+    p$layers <- c(geom_hline(yintercept = 0, linetype = "dashed", colour = "darkgrey"), p$layers)
 
   # add plot to list
   diversityplots[[m]] <- p
@@ -440,7 +440,7 @@ for(m in names(diversitylist_D1)){
         dots = "sina1",
       contrast_rows = "all",
       palette = pal_okabe_ito_FF,
-      y_label = "Shannon-diversity",
+      y_label = "Effective number of species/taxa",
       g_label = "none"
     ) +
       theme(axis.text.x = element_blank(),
@@ -452,7 +452,7 @@ for(m in names(diversitylist_D1)){
       theme(axis.text.x = element_blank())
 
   # add dashed horizontal line at y = 0, in a way that puts line below other layers
-    p <- p - geom_hline(yintercept = 0, linetype = "dashed", colour = "darkgrey")
+    p$layers <- c(geom_hline(yintercept = 0, linetype = "dashed", colour = "darkgrey"), p$layers)
 
   # add plot to list
   diversityplots[[m]] <- p
@@ -491,7 +491,7 @@ for(m in names(diversitylist_D1)){
 divplot <- wrap_plots(diversityplots, ncol = 3) 
 
 # produce complete table with ratios and their CIs
-write.csv(diversityratios, "Output_tables/H2.ratios_D0.csv")
+write.csv(diversityratios, "Output_tables/H2.ratios_D1.csv")
 
 # produce complete table with information on models (for supplement)
 mutate(modeloutput_div, across(where(is.numeric), round, 2)) %>%

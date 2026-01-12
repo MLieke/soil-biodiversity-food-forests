@@ -46,7 +46,7 @@ taxon_macroarthropods <- readRDS("taxon_macroarthropods.rds")
 taxon_earthworms <- readRDS("taxon_earthworms.rds")
 
 # read in environmental (soil property) data
-chemphys <- read.csv("Data/chemphys_P2.csv")
+chemphys <- read.csv("Data/Chemphys.csv")
 
 # read in NMDS results
 NMDSreslist <- readRDS("NMDSreslist.rds")
