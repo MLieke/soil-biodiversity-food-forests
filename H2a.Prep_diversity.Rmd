@@ -24,7 +24,8 @@ codes_info <- read.csv("Data/codes_info.csv")
 The sequencing data was pre-processed elsewhere into dataframes with diversity measures per sample plot.
 
 ```{r data_seq}
-# read dataframes with 1D at the plot level
+# read dataframes with alpha-diversity at the plot level
+
 #q=1
 bacteria <- read.csv("Data/Hill_1_16S.csv") %>% rename(D1 = qD)
 protists <- read.csv("Data/Hill_1_18S.csv") %>% rename(D1 = qD)
