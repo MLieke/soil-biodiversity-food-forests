@@ -167,11 +167,12 @@ plot(simulateResiduals(fittedModel = model.g_noRE, plot = F))
 performance::r2(model.g_noRE)
 ```
 
-## Isopods, millipedes, centipedes, carabids, earthworms - tweedie
+## Isopods, millipedes, centipedes, harvestmen, carabids, earthworms - tweedie
 
 ```{r simpletweedie_D1}
 df <- diversitylist_D1[["isopods"]]
-# or [["millipedes"]], [["centipedes"]], [["carabids"]], [["earthworms"]]
+# or [["millipedes"]], [["centipedes"]], [["harvestmen"]],
+# [["carabids"]] or [["earthworms"]]
 
 model <- glmmTMB(D1 ~ landuse + (1|location),
                  family = tweedie,
@@ -198,31 +199,6 @@ aa$.resid0 <- df$D1-aa$.fitted0
 )
 (lme4:::dotplot.ranef.mer(ranef(model)$cond)) 
 
-```
-
-## Harvestmen - tweedie without RE
-
-```{r harvestmen_D1}
-df <- diversitylist_D1[["harvestmen"]]
-nrow(df)
-
-# tweedie 
-model <- glmmTMB(D1 ~ landuse + (1|location),
-                 family = tweedie,
-                 data = df) 
-simres <- simulateResiduals(fittedModel = model, plot = F)
-plot(simres) # looks GOOD
-summary(model)
-performance::r2(model) # issue
-
-# tweedie without RE
-model_noRE <- glmmTMB(D1 ~ landuse,
-                 family = tweedie,
-                 data = df) 
-simres <- simulateResiduals(fittedModel = model_noRE, plot = F)
-plot(simres) # looks GOOD
-summary(model_noRE)
-performance::r2(model_noRE) # not possible, not supported
 ```
 
 # D0

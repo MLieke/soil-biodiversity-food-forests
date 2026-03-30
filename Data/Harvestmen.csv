@@ -53,7 +53,7 @@ session,site,location,landuse,trap,species,abundance,Sex,Stage
 3,AO,Etten-Leur,Food_forest,1,PAROLIGOLOPHUS_AGRESTIS,2,,JUV
 3,AO,Etten-Leur,Food_forest,1,PHALANGIIDAE_SPEC.,1,,JUV
 3,P,Sint-Truiden,Food_forest,2,PHALANGIIDAE_SPEC.,1,,JUV
-3,G,Vlaardingen,Food_forest,1,PARANEMASTOMA_QUADRIPUNCTATUM,1,,JUV
+3,G,Vlaardingen,Food_forest,1,NEMASTOMA_DENTIGERUM,1,,JUV
 3,AX,Vaassen,Food_forest,2,PHALANGIIDAE_SPEC.,1,,JUV
 3,I,Boelenslaan,Grassland,1,LEIOBUNUM_SPEC.,2,,JUV
 3,AW,Vaassen,Forest,1,PHALANGIIDAE_SPEC.,1,,JUV
@@ -173,7 +173,7 @@ session,site,location,landuse,trap,species,abundance,Sex,Stage
 1,AD,Houthulst,Food_forest,1,NEMASTOMA_SPEC.,3,,JUV
 1,AD,Houthulst,Food_forest,1,NEMASTOMA_BIMACULATUM,1,M,AD
 1,AD,Houthulst,Food_forest,1,NEMASTOMA_LUGUBRE,1,F,AD
-1,U,Amsterdam,Food_forest,2,NEMASTOMA_SPEC.,1,,JUV
+1,U,Amsterdam,Food_forest,2,NEMASTOMA_DENTIGERUM,1,,JUV
 1,U,Amsterdam,Food_forest,2,NEMASTOMA_DENTIGERUM,5,M,AD
 1,U,Amsterdam,Food_forest,2,NEMASTOMA_DENTIGERUM,1,F,AD
 4,A,Haarzuilens,Food_forest,1,RILAENA_TRIANGULARIS,3,,JUV
