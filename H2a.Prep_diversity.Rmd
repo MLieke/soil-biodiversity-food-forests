@@ -59,6 +59,9 @@ millipedes <- read.csv("Data/Millipedes.csv") %>%
 
 harvestmen <- read.csv("Data/Harvestmen.csv") %>%
   select(!c(Stage, Sex)) %>%
+  # for the diversity analyses remove _spec. entries except for Leiobunum spec.
+  filter(!(species %in% c("NEMASTOMA_SPEC.", 
+                          "NEMASTOMATIDAE_SPEC.",  "PHALANGIIDAE_SPEC."))) %>%
   as.data.frame()
 
 carabids <- read.csv("Data/Carabids.csv") %>%

@@ -301,12 +301,9 @@ for(m in names(diversitylist_D1)){
                             family = Gamma(link = "log"),
                             data = df)}
                    
-  if(m %in% c("isopods", "millipedes", "centipedes", "carabids", "earthworms")){
+  if(m %in% c("isopods", "millipedes", "centipedes", 
+              "harvestmen", "carabids", "earthworms")){
     fitted_model <- glmmTMB(D1 ~ landuse + (1|location),
-                            family = tweedie,
-                            data = df)}
-  if(m == "harvestmen"){
-    fitted_model <- glmmTMB(D1 ~ landuse,
                             family = tweedie,
                             data = df)}
 
@@ -314,10 +311,10 @@ for(m in names(diversitylist_D1)){
   ## "extra dispersion" attributable to random effects  
   ## (for bias-adjustment when back-transforming)
   ## (so not for protists, mites and harvestmen)
-  extra_disp <- if(!m %in% c("protists", "mites", "harvestmen")) {sqrt(sum(insight::get_variance(fitted_model)[["var.intercept"]]))} else 0
+  extra_disp <- if(!m %in% c("protists", "mites")) {sqrt(sum(insight::get_variance(fitted_model)[["var.intercept"]]))} else 0
   
   # put model summary into dataframe
-  if(!(m %in% c("protists", "nematodes", "mites", "harvestmen"))){ # for these groups did it separately, manually, was quicker here
+  if(!(m %in% c("protists", "nematodes", "mites"))){ # for these groups did it separately, manually, was quicker here
     reptable <- as.data.frame(report_table(fitted_model))
     modeloutput <- data.frame(group = m,
                       dispersion = reptable %>% 
@@ -446,12 +443,20 @@ for(m in names(diversitylist_D1)){
       theme(axis.text.x = element_blank(),
             axis.title.y = element_text(size = 18),
             axis.text.y = element_text(size = 15),
-            axis.ticks.x = element_blank()) +
-    # make sure y-axis labels are always round numbers, except in case of springtails 1 digit
-      scale_y_continuous(labels = function(x) sprintf("%.0f", x)) +
-      theme(axis.text.x = element_blank())
-
-  # add dashed horizontal line at y = 0, in a way that puts line below other layers
+            axis.ticks.x = element_blank())
+  
+  # for springtails, mites, millipedes and harvestmen define y-axis breaks
+  if(m == "spingtails"){
+    p <- p +
+      scale_y_continuous(breaks = c(0,2,4,6,8,10,12))
+  }
+  
+  if(m %in% c("mites", "millipedes", "harvestmen")){
+    p <- p +
+      scale_y_continuous(breaks = c(0,2,4,6,8,10))
+  }
+  
+  # add dashed horizontal line at y,=,0, in a way that puts line below other layers
     p$layers <- c(geom_hline(yintercept = 0, linetype = "dashed", colour = "darkgrey"), p$layers)
 
   # add plot to list
